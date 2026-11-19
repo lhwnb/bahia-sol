@@ -1,53 +1,78 @@
-// Keyboard and pointer input. Held keys give a steering direction; one-shot presses (start or
-// restart, pause) are queued as bit flags and taken once by the loop, so a press between two
-// frames is never lost and never counted twice.
+/* Bahía Sol — input.
+   Keyboard state, edge-triggered presses, pointer-lock mouse deltas. The game
+   reads this once per frame and main clears the edges at the end of the step. */
+window.BS = window.BS || {};
 
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
+(function (BS) {
+  'use strict';
 
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
+  function Input(canvas) {
+    var self = this;
+    this.keys = {};
+    this.pressed = {};
+    this.mouseDX = 0;
+    this.mouseDY = 0;
+    this.mouseDown = [false, false, false];
+    this.locked = false;
+    this.canvas = canvas;
 
-export function createInput(target) {
-  let left = false;
-  let right = false;
-  let actions = 0;
+    window.addEventListener('keydown', function (e) {
+      if (e.repeat) return;
+      var code = e.code;
+      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].indexOf(code) >= 0) e.preventDefault();
+      self.keys[code] = true;
+      self.pressed[code] = true;
+    });
+    window.addEventListener('keyup', function (e) {
+      self.keys[e.code] = false;
+    });
+    window.addEventListener('blur', function () {
+      self.keys = {};
+      self.mouseDown = [false, false, false];
+    });
 
-  window.addEventListener('keydown', (event) => {
-    if (LEFT.has(event.code)) left = true;
-    else if (RIGHT.has(event.code)) right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else return;
-    event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    if (LEFT.has(event.code)) left = false;
-    else if (RIGHT.has(event.code)) right = false;
-  });
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
-  window.addEventListener('blur', () => {
-    left = false;
-    right = false;
-  });
-  target.addEventListener('pointerdown', () => {
-    actions |= ACTION_CONFIRM;
-  });
+    document.addEventListener('pointerlockchange', function () {
+      self.locked = document.pointerLockElement === canvas;
+    });
+    document.addEventListener('mousemove', function (e) {
+      if (!self.locked) return;
+      self.mouseDX += e.movementX || 0;
+      self.mouseDY += e.movementY || 0;
+    });
+    canvas.addEventListener('mousedown', function (e) {
+      if (e.button < 3) self.mouseDown[e.button] = true;
+    });
+    window.addEventListener('mouseup', function (e) {
+      if (e.button < 3) self.mouseDown[e.button] = false;
+    });
+    canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  }
 
-  return {
-    /** -1 for left, 1 for right, 0 for neither or both. */
-    direction() {
-      return (right ? 1 : 0) - (left ? 1 : 0);
-    },
-    /** The one-shot presses since the last call, as ACTION_* flags. */
-    takeActions() {
-      const taken = actions;
-      actions = 0;
-      return taken;
-    },
+  Input.prototype.lock = function () {
+    if (!this.canvas.requestPointerLock) return;
+    try {
+      var pending = this.canvas.requestPointerLock();
+      // Chrome returns a promise when the gesture is not good enough; a refused
+      // lock is harmless, the player can still steer with the keyboard.
+      if (pending && typeof pending.catch === 'function') pending.catch(function () {});
+    } catch (err) {
+      // pointer lock unavailable (headless, iframe); ignore
+    }
   };
-}
+
+  Input.prototype.axes = function () {
+    var k = this.keys;
+    return {
+      forward: (k.KeyW || k.ArrowUp ? 1 : 0) + (k.KeyS || k.ArrowDown ? -1 : 0),
+      strafe: (k.KeyD || k.ArrowRight ? 1 : 0) + (k.KeyA || k.ArrowLeft ? -1 : 0)
+    };
+  };
+
+  Input.prototype.endFrame = function () {
+    this.pressed = {};
+    this.mouseDX = 0;
+    this.mouseDY = 0;
+  };
+
+  BS.Input = Input;
+})(window.BS);
