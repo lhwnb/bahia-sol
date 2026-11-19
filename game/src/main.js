@@ -31,6 +31,7 @@ window.BS = window.BS || {};
 
   BS.Fx.init(scene);
   var city = BS.City.build(scene, { seed: 7411 });
+  BS.Shadows.init(scene);
 
   var game = {
     scene: scene,
@@ -100,12 +101,15 @@ window.BS = window.BS || {};
   game.shotExtra = [];
 
   // --------------------------------------------------------------- camera
+  function followSunAt(x, z) {
+    var d = CFG.sun.dir;
+    city.sunLight.position.set(x + d.x * 420, Math.max(60, d.y * 420), z + d.z * 420);
+    city.sunLight.target.position.set(x, 0, z);
+    city.sunLight.target.updateMatrixWorld();
+  }
   function followSun() {
     var p = player.pos;
-    var d = CFG.sun.dir;
-    city.sunLight.position.set(p.x + d.x * 420, Math.max(60, d.y * 420), p.z + d.z * 420);
-    city.sunLight.target.position.set(p.x, 0, p.z);
-    city.sunLight.target.updateMatrixWorld();
+    followSunAt(p.x, p.z);
   }
   followSun();
 
@@ -367,6 +371,7 @@ window.BS = window.BS || {};
     BS.Fx.update(dt);
     city.update(dt, game.time);
     followSun();
+    BS.Shadows.update(game);
 
     if (game.respawnTimer > 0) {
       game.respawnTimer -= dt;
@@ -403,6 +408,8 @@ window.BS = window.BS || {};
     game.time += dt;
     city.update(dt, game.time);
     BS.Shots.update(game.shotName, game, game.time);
+    followSunAt(camera.position.x, camera.position.z);
+    BS.Shadows.update(game);
     BS.Fx.update(dt);
     hud.update(dt, game);
   }
@@ -431,6 +438,7 @@ window.BS = window.BS || {};
 
     renderer.render(scene, camera);
     frameCount++;
+    window.__frame = frameCount;
 
     if (isShot && frameCount >= 8 && !window.__ready) {
       window.__ready = true;

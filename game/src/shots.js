@@ -122,7 +122,12 @@ window.BS = window.BS || {};
   }
 
   function stageContainer(game, x, z, color, ry, stack) {
-    var skin = new THREE.MeshStandardMaterial({ color: color, roughness: 0.66, metalness: 0.3 });
+    // corrugated steel: the skin carries ribs, rust weeping and a ground grime band
+    var skinTex = BS.Tex.containerSkin(color);
+    skinTex.repeat.set(3, 1);
+    var skin = new THREE.MeshStandardMaterial({
+      map: skinTex, color: 0xffffff, roughness: 0.7, metalness: 0.34
+    });
     var trim = new THREE.MeshStandardMaterial({ color: 0x24282c, roughness: 0.8 });
     var h = 2.55, n = stack || 1, a = ry || 0;
     var ex = Math.cos(a) * 3.0, ez = -Math.sin(a) * 3.0;
@@ -156,13 +161,27 @@ window.BS = window.BS || {};
   }
 
   function stageShed(game, x, z, w, d, h, ry) {
+    // corrugated steel: ribs, rails and rust streaks at a real-world scale,
+    // because a 27 m wall on a 0..1 box UV is otherwise a flat grey slab
+    var wallTex = BS.Tex.containerSkin(0x8f918c);
+    wallTex = wallTex.clone();
+    wallTex.needsUpdate = true;
+    wallTex.wrapS = THREE.RepeatWrapping;
+    wallTex.wrapT = THREE.RepeatWrapping;
+    wallTex.repeat.set(w / 7.5, h / 5.0);
     var mat = new THREE.MeshStandardMaterial({
-      map: BS.Tex.facadeWarehouse(0x8d8f8a), color: 0xd8d6cf, roughness: 0.84, metalness: 0.16
+      map: wallTex, color: 0xcfd0c8, roughness: 0.82, metalness: 0.26
     });
     addProp(game, new THREE.BoxGeometry(w, h, d), mat, x, h / 2, z, ry);
     addProp(game, new THREE.BoxGeometry(w + 1.2, 0.6, d + 1.2), new THREE.MeshStandardMaterial({
       color: 0x4d5257, roughness: 0.8, metalness: 0.3
     }), x, h + 0.3, z, ry);
+    // a string of high windows catches the last of the sun
+    var winMat = new THREE.MeshStandardMaterial({ color: 0x3a4a55, roughness: 0.35, metalness: 0.55 });
+    for (var wi = 0; wi < 5; wi++) {
+      addProp(game, new THREE.BoxGeometry(1.9, 1.1, 0.12), winMat,
+        x - w * 0.36 + wi * (w * 0.18), h * 0.78, z + d / 2 + 0.05, ry);
+    }
   }
 
   function stageBoat(game, x, z, ry, color) {
@@ -215,6 +234,76 @@ window.BS = window.BS || {};
     }
   }
 
+  // a warm flare pinned to a world point: lets the cover put the sun in the
+  // slot between two towers instead of wherever the light rig happens to aim
+  function addFlareAt(game, x, y, z, size, opacity, color) {
+    var core = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: BS.Tex.glow(), color: color || 0xfff0cf, transparent: true, opacity: opacity || 0.6,
+      blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false, fog: false
+    }));
+    core.scale.set(size, size, 1);
+    core.position.set(x, y, z);
+    core.renderOrder = 900;
+    game.scene.add(core);
+    var halo = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: BS.Tex.glow(), color: color || 0xffc48a, transparent: true, opacity: (opacity || 0.6) * 0.4,
+      blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false, fog: false
+    }));
+    halo.scale.set(size * 4.6, size * 3.2, 1);
+    halo.position.set(x, y, z);
+    halo.renderOrder = 899;
+    game.scene.add(halo);
+    // anamorphic smear so it reads as a lens flare, not as a lamp
+    var bar = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: BS.Tex.streak(), color: 0xffdcb0, transparent: true, opacity: (opacity || 0.6) * 0.5,
+      blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false, fog: false
+    }));
+    bar.scale.set(size * 7.5, size * 0.22, 1);
+    bar.position.set(x, y, z);
+    bar.renderOrder = 899;
+    game.scene.add(bar);
+    if (!game.shotExtra) game.shotExtra = [];
+    game.shotExtra.push(core, halo, bar);
+  }
+
+  function addSunFlare(game, dist) {
+    var dir = CFG.sun.dir.clone().normalize();
+    var pos = game.camera.position.clone().add(dir.multiplyScalar(dist || 300));
+    var core = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: BS.Tex.glow(), color: 0xffe6bd, transparent: true, opacity: 0.9,
+      blending: THREE.AdditiveBlending, depthWrite: false, fog: false
+    }));
+    core.scale.set(122, 122, 1);
+    core.position.copy(pos);
+    game.scene.add(core);
+    var halo = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: BS.Tex.glow(), color: 0xffc48a, transparent: true, opacity: 0.34,
+      blending: THREE.AdditiveBlending, depthWrite: false, fog: false
+    }));
+    halo.scale.set(430, 300, 1);
+    halo.position.copy(pos);
+    game.scene.add(halo);
+    if (!game.shotExtra) game.shotExtra = [];
+    game.shotExtra.push(core, halo);
+  }
+
+  // long additive smear on the tarmac: tail lights and headlights read as light,
+  // not as paint, once it is stretched along the direction of travel
+  function addLightStreak(game, x, z, ry, len, wid, color, opacity) {
+    var mat = new THREE.MeshBasicMaterial({
+      map: BS.Tex.glow(), color: color, transparent: true, opacity: opacity || 0.3,
+      blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false
+    });
+    var m = new THREE.Mesh(new THREE.PlaneGeometry(wid, len), mat);
+    m.rotation.x = -Math.PI / 2;
+    m.rotation.z = ry || 0;
+    m.position.set(x, 0.07, z);
+    game.scene.add(m);
+    if (!game.shotExtra) game.shotExtra = [];
+    game.shotExtra.push(m);
+    return m;
+  }
+
   function cover(game) {
     game.city.setNight(false);
     var car = stageCar(game, 'falcon', 0xb51f2a, 46, -2.3, -Math.PI / 2, { speed: 31 });
@@ -229,9 +318,10 @@ window.BS = window.BS || {};
     game.cash = 12450;
 
     game.police.wanted = 0;
-    stageCop(game, 37.2, -5.3, -Math.PI / 2 + 0.13);
-    stageCop(game, 31.5, 4.7, -Math.PI / 2 - 0.16);
-    stageCop(game, 22.5, -1.6, -Math.PI / 2 + 0.06);
+    // the first cruiser is angling across the asphalt to cut the falcon off
+    stageCop(game, 40.6, 3.4, -Math.PI / 2 - 0.46);
+    stageCop(game, 33.4, -5.2, -Math.PI / 2 + 0.2);
+    stageCop(game, 24.6, 1.4, -Math.PI / 2 + 0.05);
     game.police.setWanted(4);
 
     // oncoming traffic for depth
@@ -246,66 +336,81 @@ window.BS = window.BS || {};
     game.missions.objective = 'Lleva La Roja a los muelles · 2:14';
     game.missions.setMarker(CFG.missions[0].dropoff, 0xffc46b);
 
-    // sidewalk life, three colourways
-    placeWalker(game, 0, 52, 13.5, Math.PI, 1.25, 0.4);
-    placeWalker(game, 1, 60.5, -13.7, 0, 1.35, 1.7);
-    placeWalker(game, 2, 66, 14.1, Math.PI, 1.1, 2.6);
-    placeWalker(game, 3, 38, -14.3, 0, 1.45, 3.4);
-    placeWalker(game, 4, 29.5, 13.9, Math.PI, 1.2, 4.8);
-    placeWalker(game, 5, 78, -13.5, 0, 1.3, 5.5);
+    // people at human scale: one crossing nine metres out, a pair talking on the
+    // far kerb, the rest walking away down the block
+    placeWalker(game, 0, 48.2, 2.6, 0.1, 1.28, 0.55);
+    placeWalker(game, 1, 43.6, 10.4, Math.PI - 0.1, 0.02, 1.7);
+    placeWalker(game, 2, 42.7, 11.3, 0.35, 0.02, 2.6);
+    placeWalker(game, 3, 52.0, 13.1, Math.PI, 1.2, 3.4);
+    placeWalker(game, 4, 58.5, 12.6, 0.1, 1.35, 4.8);
+    placeWalker(game, 5, 30.5, 13.4, Math.PI, 1.3, 5.5);
 
     // red and blue wash on the asphalt behind the pursuit
-    addLightPool(game, 44.0, -7.4, 0xff2438, 16, 0.26);
-    addLightPool(game, 43.5, 3.8, 0x2f5bff, 14, 0.22);
+    addLightPool(game, 42.5, -0.4, 0xff2438, 15, 0.24);
+    addLightPool(game, 41.0, 5.6, 0x2f5bff, 13, 0.2);
+    addLightStreak(game, 51.0, -1.2, 0, 9, 3.2, 0xff3b2e, 0.22);
+    addSunFlare(game, 340);
 
     setPose(game, 52.4, 2.1, -6.9, 45.6, 1.05, -1.9, 47);
+    // the sun sits in the slot between the towers at the head of the avenue
+    addFlareAt(game, 52.4 - 6.8 * 24, 46, -6.9 + 5.0 * 24, 30, 0.72, 0xfff2d6);
   }
 
+  // 2-street: downtown junction at golden hour — the shot that has to read as a
+  // living city in one frame: traffic, crowd, signals, palms, one cruiser.
   function foot(game) {
     game.city.setNight(false);
-    // on the seaward shoulder of the coast road, looking east along the shore
-    game.player.setPosition(28, 606.4, 1.5);
-    game.player.yaw = 1.5;
-    game.player.heading = 1.5;
+    var jx = 120, jz = 0;
+
+    game.player.setPosition(128.2, jz + 6.2, Math.PI * 0.9);
+    game.player.yaw = Math.PI * 0.88;
+    game.player.heading = Math.PI * 0.88;
     game.player.pitch = 0.02;
-    game.player.health = 92;
-    game.player.armour = 55;
+    game.player.health = 96;
+    game.player.armour = 60;
     game.player.mesh.visible = true;
     game.player.mesh.rotation.y = game.player.heading;
-    game.player.mesh.userData.legL.rotation.x = 0.55;
-    game.player.mesh.userData.legR.rotation.x = -0.55;
-    game.player.mesh.userData.armL.rotation.x = -0.45;
-    game.player.mesh.userData.armR.rotation.x = 0.45;
-    game.cash = 8200;
+    game.player.mesh.userData.legL.rotation.x = 0.42;
+    game.player.mesh.userData.legR.rotation.x = -0.42;
+    game.player.mesh.userData.armL.rotation.x = -0.38;
+    game.player.mesh.userData.armR.rotation.x = 0.34;
+    game.cash = 8420;
 
-    // walkers along the promenade and the sand
-    placeWalker(game, 0, 46, 598, Math.PI + 0.3, 1.3, 0.2);
-    placeWalker(game, 1, 58, 604, 0.1, 1.1, 1.4);
-    placeWalker(game, 2, 72, 594, Math.PI - 0.2, 1.4, 2.2);
-    placeWalker(game, 3, 86, 605, 0.2, 1.2, 0.9);
-    placeWalker(game, 4, 100, 597, Math.PI, 1.3, 3.1);
-    placeWalker(game, 5, 116, 604, 0, 1.2, 1.1);
-    placeWalker(game, 6, 54, 586, Math.PI + 0.6, 1.1, 2.6);
-    placeWalker(game, 7, 132, 596, 0, 1.3, 0.6);
-    placeWalker(game, 8, 38, 590, Math.PI - 0.4, 1.2, 2.0);
-    placeWalker(game, 9, 150, 603, 0.1, 1.2, 1.8);
+    // queue on the avenue, nose to tail, waiting for the light
+    stageCar(game, 'taxi', 0xe0b23c, jx + 5.0, 5.4, Math.PI / 2, { speed: 0 });
+    stageCar(game, 'sedan', 0x9fb4c4, jx - 1.5, 5.4, Math.PI / 2, { speed: 0 });
+    stageCar(game, 'van', 0xd8d2c6, jx - 8.5, 5.4, Math.PI / 2, { speed: 1.5 });
+    // rolling the other way, through the box and away
+    stageCar(game, 'sedan', 0x2f5f9e, jx - 6.0, -5.4, -Math.PI / 2, { speed: 10 });
+    stageCar(game, 'sport', 0xa8432f, jx - 20.0, -5.4, -Math.PI / 2, { speed: 14 });
+    // crossing traffic on the north-south street
+    stageCar(game, 'pickup', 0x4a5b46, jx - 4.9, jz - 15.0, 0, { speed: 9 });
+    stageCar(game, 'taxi', 0xe0b23c, jx + 4.9, jz + 18.0, Math.PI, { speed: 10 });
+    // the cruiser sits behind the queue with the bar going
+    stageCop(game, jx + 6.0, -5.4, -Math.PI / 2);
+    game.police.setWanted(2);
 
-    // traffic on the coast road
-    stageCar(game, 'sedan', 0xd9d2c4, 40, 596.4, Math.PI / 2, { speed: 11 });
-    stageCar(game, 'taxi', 0xe0b23c, -46, 605.6, -Math.PI / 2, { speed: 10 });
-    stageCar(game, 'sport', 0x2f6f9e, 78, 596.4, Math.PI / 2, { speed: 14 });
-    stageCar(game, 'van', 0xdad6cc, 120, 605.6, -Math.PI / 2, { speed: 9 });
-    stageCar(game, 'pickup', 0x4a5b46, 14, 596.4, Math.PI / 2, { speed: 12 });
-    stageCar(game, 'sedan', 0x8d6f4a, 56, 595.2, Math.PI / 2, { speed: 0 });
+    // crowd on both corners, plus two following the player over the stripes
+    placeWalker(game, 0, jx - 6.0, jz + 12.4, Math.PI * 0.95, 1.2, 0.4);
+    placeWalker(game, 1, jx - 9.6, jz + 13.0, 0.2, 1.3, 1.3);
+    placeWalker(game, 2, jx - 13.4, jz + 12.2, Math.PI * 1.1, 1.15, 2.2);
+    placeWalker(game, 3, jx - 8.4, jz + 14.0, 0.6, 0.02, 3.1);
+    placeWalker(game, 4, jx - 7.0, jz - 12.6, Math.PI * 0.95, 1.35, 0.9);
+    placeWalker(game, 5, jx - 12.8, jz - 13.2, 0.1, 1.25, 1.9);
+    placeWalker(game, 6, jx - 2.2, jz - 12.8, Math.PI, 1.3, 2.7);
+    placeWalker(game, 7, jx + 5.6, jz + 5.4, Math.PI * 0.86, 1.25, 3.9);
+    placeWalker(game, 8, jx + 3.2, jz + 3.4, Math.PI * 0.8, 1.15, 4.6);
+    // two more crossing under the camera, so the near lane is not a dead slab
+    placeWalker(game, 9, jx + 10.4, jz + 2.0, Math.PI * 0.5, 1.2, 1.1);
+    placeWalker(game, 10, jx + 9.0, jz + 0.4, Math.PI * 0.46, 1.15, 3.3);
 
-    // near-field furniture, 3-6 m from the lens
-    stageHydrant(game, 23.6, 603.4);
-    stageBin(game, 24.6, 609.0);
+    stageHydrant(game, jx + 17.6, jz + 11.4);
+    stageBin(game, jx + 8.4, jz + 14.2);
 
-    game.missions.objective = 'Trabajo disponible: La Roja';
-    game.missions.setMarker(new THREE.Vector3(112, 0, 601), 0xffc46b);
+    game.missions.objective = 'Cruza la avenida · Centro';
+    game.missions.setMarker(new THREE.Vector3(jx - 46, 0, jz + 6.0), 0xffc46b);
 
-    setPose(game, 20, 2.6, 607.6, 108, 0.8, 628, 58);
+    setPose(game, 135.6, 2.55, 12.4, 120.0, 1.15, 1.2, 55);
   }
 
   function stageDockLamp(game, x, z, height) {
@@ -329,9 +434,9 @@ window.BS = window.BS || {};
   function mission(game) {
     game.city.setNight(false);
     // Puerto Norte at dusk: player peeks around a container, the crew holds the quay
-    game.player.setPosition(-335.4, 490.4, Math.PI - 0.22);
-    game.player.yaw = Math.PI - 0.16;
-    game.player.heading = Math.PI - 0.16;
+    game.player.setPosition(-335.8, 491.6, Math.PI - 0.03);
+    game.player.yaw = Math.PI - 0.03;
+    game.player.heading = Math.PI - 0.03;
     game.player.mesh.visible = true;
     game.player.mesh.rotation.y = game.player.heading;
     game.player.weaponDrawn = true;
@@ -349,83 +454,141 @@ window.BS = window.BS || {};
     game.combat.ammo.pistol = 7;
 
     // containers: cover on the left, a wall of colour down the quay
-    stageContainer(game, -339.4, 492.6, 0x9c4632, 0.12, 2);
-    stageContainer(game, -345.6, 485.0, 0x2f6f73, 0.02, 1);
-    stageContainer(game, -330.4, 478.4, 0xa8823a, -0.06, 1);
-    stageContainer(game, -348.8, 478.2, 0x4d5f52, 0.1, 2);
+    stageContainer(game, -340.8, 487.4, 0x9c4632, 0.06, 2);
+    stageContainer(game, -345.6, 490.6, 0x2f6f73, 0.02, 1);
+    stageContainer(game, -346.4, 481.6, 0xa8823a, -0.06, 1);
+    stageContainer(game, -331.0, 477.6, 0x4d5f52, 0.1, 1);
 
-    // six rivals spread across the quay ahead
-    var rivals = game.peds.spawnRivals({ x: -336, z: 478 }, 6);
+    // six rivals in two clusters, all turned towards the player
+    var rivals = game.peds.spawnRivals({ x: -336, z: 480 }, 6);
     var spots = [
-      [-338.0, 484.2], [-333.2, 482.0], [-342.2, 480.8],
-      [-328.4, 483.4], [-336.4, 476.6], [-343.4, 475.4]
+      [-335.6, 483.4], [-334.4, 481.8], [-337.8, 480.8],
+      [-331.2, 483.0], [-329.4, 481.6], [-332.6, 480.4]
     ];
     for (var i = 0; i < rivals.length; i++) {
       var p = rivals[i];
       p.x = spots[i][0];
       p.z = spots[i][1];
-      p.heading = Math.atan2(-336.2 - p.x, 491.6 - p.z);
+      p.heading = Math.atan2(-335.8 - p.x, 491.6 - p.z);
       p.shootTimer = 99;
       p.phase = i * 1.1;
       game.peds.writeMatrices(p, null);
     }
 
-    // cruisers roll in from the east with the bars going
-    stageCop(game, -328.6, 480.8, -Math.PI / 2 + 0.62);
-    stageCop(game, -320.6, 486.4, -Math.PI / 2 - 0.05);
+    // a cruiser arrives from the east and slews across the quay, bars lit
+    stageCop(game, -324.6, 484.2, -Math.PI / 2 + 0.9);
+    stageCop(game, -319.4, 480.2, -Math.PI / 2 + 0.1);
     game.police.setWanted(3);
+    addLightPool(game, -323.6, 481.4, 0xff2438, 16, 0.32);
+    addLightPool(game, -322.6, 487.2, 0x2f5bff, 14, 0.28);
+    addLightPool(game, -318.0, 477.0, 0xff2438, 11, 0.16);
+    addLightPool(game, -327.0, 486.0, 0xff2438, 21, 0.26);
+    addLightPool(game, -329.2, 481.0, 0x2f5bff, 23, 0.3);
 
     // dock dressing
-    stageCrane(game, -353.0, 479.0, 0.06);
+    stageCrane(game, -346.0, 474.0, 0.06);
     stageShed(game, -330.0, 467.5, 27, 9, 8.5, 0);
     stageBoat(game, -371.0, 493.0, 0.08, 0xe9e4d6);
     stageBoat(game, -381.0, 472.0, -0.04, 0xcfd8d4);
-    stageHydrant(game, -333.4, 497.6);
-    stageBin(game, -329.8, 496.4);
+    stageHydrant(game, -338.4, 495.4);
+    stageBin(game, -331.2, 497.0);
     var crateMat = new THREE.MeshStandardMaterial({ color: 0x8a6b44, roughness: 0.85 });
     addProp(game, new THREE.BoxGeometry(1.25, 1.1, 1.05), crateMat, -330.6, 0.58, 496.2, 0.42);
     addProp(game, new THREE.BoxGeometry(0.95, 0.8, 0.9), crateMat, -329.4, 0.44, 497.4, -0.2);
     addProp(game, new THREE.BoxGeometry(1.1, 0.95, 0.95), crateMat, -331.6, 0.5, 497.1, 0.15);
-    stageDockLamp(game, -334.6, 488.4, 6.4);
-    stageDockLamp(game, -343.2, 481.6, 6.0);
-    stageDockLamp(game, -327.6, 476.0, 5.6);
+    stageDockLamp(game, -338.6, 486.0, 6.4);
+    stageDockLamp(game, -327.2, 478.6, 5.8);
+
+    // concrete apron so the quay reads as a yard, not as beach sand
+    var apronTex = BS.Tex.concrete();
+    apronTex.repeat.set(24, 17);
+    var apron = new THREE.Mesh(
+      new THREE.PlaneGeometry(120, 86),
+      new THREE.MeshStandardMaterial({ map: apronTex, color: 0x8f908b, roughness: 0.88, metalness: 0.06 })
+    );
+    apron.rotation.x = -Math.PI / 2;
+    apron.position.set(-334.0, 0.04, 487.0);
+    apron.receiveShadow = true;
+    game.scene.add(apron);
+    game.shotExtra.push(apron);
 
     game.missions.objective = 'Limpia el muelle · 3 rivales';
-    game.missions.setMarker(new THREE.Vector3(-336, 0, 471), 0xffc46b);
+    game.missions.setMarker(new THREE.Vector3(-336, 0, 474), 0xffc46b);
 
     if (BS.HUD) {
       BS.HUD.ticker('El Ruso: <b>+$500</b> por cada contenedor asegurado');
-      BS.HUD.showCard('El Ruso', 'Muelle Norte',
-        'Los muchachos del contenedor no van a soltarlo. Entra y limpia el muelle.');
+      BS.HUD.hideCard();
     }
 
-    setPose(game, -329.6, 3.45, 501.4, -335.6, 1.32, 484.4, 46);
+    setPose(game, -334.2, 2.18, 499.2, -335.8, 1.30, 479.0, 50);
+  }
+
+  function addHeadlightCone(game, x, z, dir, len, color, opacity) {
+    // dir: +1 along +x, -1 along -x, or a heading in radians
+    var rot = (typeof dir === 'number' && Math.abs(dir) > 1.4) ? dir : 0;
+    var mat = new THREE.MeshBasicMaterial({
+      map: BS.Tex.glow(), color: color || 0xffe3b0, transparent: true, opacity: opacity || 0.42,
+      blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false
+    });
+    var m = new THREE.Mesh(new THREE.PlaneGeometry(7.4, len || 20), mat);
+    m.rotation.x = -Math.PI / 2;
+    m.rotation.z = rot;
+    m.position.set(x, 0.075, z);
+    game.scene.add(m);
+    if (!game.shotExtra) game.shotExtra = [];
+    game.shotExtra.push(m);
+    var s = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: BS.Tex.glow(), color: color || 0xffe3b0, transparent: true, opacity: 0.6,
+      blending: THREE.AdditiveBlending, depthWrite: false, fog: false
+    }));
+    s.scale.set(3.2, 2.0, 1);
+    s.position.set(x, 0.85, z);
+    game.scene.add(s);
+    game.shotExtra.push(s);
+    return m;
   }
 
   function night(game) {
     game.city.setNight(true);
-    var car = stageCar(game, 'sport', 0xc2ccd2, 45, -2.6, -Math.PI / 2, { speed: 22 });
+    var car = stageCar(game, 'sport', 0xc2ccd2, 28, -2.2, -Math.PI / 2, { speed: 24 });
     car.wheelSpin = 2.4;
-    car.steerVis = 0.08;
+    car.steerVis = 0.06;
     for (var w = 0; w < car.wheels.length; w++) {
       car.wheels[w].rotation.x = 2.4;
-      car.wheels[w].rotation.y = 0.08;
+      car.wheels[w].rotation.y = 0.06;
     }
     game.player.enterCar(car);
-    game.player.pos.set(45, 0, -2.6);
+    game.player.pos.set(28, 0, -2.2);
     game.player.health = 74;
     game.player.armour = 30;
     game.cash = 9830;
 
-    stageCop(game, 68, 4.6, -Math.PI / 2);
-    stageCop(game, 84, -5.2, -Math.PI / 2);
+    stageCop(game, -1.0, 5.2, -Math.PI / 2);
     game.police.setWanted(2);
 
-    // the street keeps moving: two coming at us, two running away
-    stageCar(game, 'taxi', 0xe0b23c, -16, 4.6, Math.PI / 2, { speed: 10 });
-    stageCar(game, 'sedan', 0x2f5f9e, -54, 4.6, Math.PI / 2, { speed: 12 });
-    stageCar(game, 'sport', 0xa8432f, -32, -4.6, -Math.PI / 2, { speed: 15 });
-    stageCar(game, 'van', 0xdad6cc, -86, -4.6, -Math.PI / 2, { speed: 9 });
+    // two oncoming cars with their beams washing the wet tarmac toward us
+    var onc1 = stageCar(game, 'taxi', 0xe0b23c, 12.0, 4.6, -Math.PI / 2, { speed: 13 });
+    var onc2 = stageCar(game, 'sedan', 0x2f5f9e, -21.0, 4.6, -Math.PI / 2, { speed: 15 });
+    // and two running away, tail lights streaking
+    var away1 = stageCar(game, 'van', 0xdad6cc, 1.0, -4.6, Math.PI / 2, { speed: 11 });
+    var away2 = stageCar(game, 'sport', 0xa8432f, -34.0, -4.6, Math.PI / 2, { speed: 17 });
+    away1.wheelSpin = 1.8; away2.wheelSpin = 3.1;
+
+    addHeadlightCone(game, 12.0, 4.6, -Math.PI / 2, 22, 0xffe4b4, 0.44);
+    addHeadlightCone(game, -21.0, 4.6, -Math.PI / 2, 18, 0xffe4b4, 0.3);
+    addHeadlightCone(game, 22.5, -2.2, -Math.PI / 2, 24, 0xffeacb, 0.5);
+    addLightStreak(game, 6.5, -4.2, 0, 11, 2.6, 0xff2f24, 0.34);
+    addLightStreak(game, -28.5, -4.2, 0, 13, 2.4, 0xff2f24, 0.3);
+    addLightStreak(game, 34.0, -2.2, 0, 12, 2.8, 0xff3b2e, 0.4);
+    // wet sheen: long coloured smears the signs and tail lights leave on the tarmac
+    addLightStreak(game, 6.0, -7.4, 0, 40, 9.0, 0xff3fa4, 0.14);
+    addLightStreak(game, -2.0, 6.4, 0, 44, 10.0, 0x35e6ff, 0.1);
+    addLightStreak(game, -24.0, 0.0, 0, 52, 12.0, 0xffb347, 0.08);
+    addLightStreak(game, 34.5, 3.4, 0, 12, 2.4, 0xff3fa4, 0.16);
+    addLightStreak(game, 28.6, -2.2, 0, 9, 1.7, 0xff3b2e, 0.42);
+    addLightStreak(game, 25.0, -6.2, 0, 14, 3.2, 0xffd9a0, 0.26);
+    addLightStreak(game, 12.0, 4.6, 0, 15, 2.6, 0xfff0d0, 0.24);
+    addLightStreak(game, -2.0, 4.2, 0, 20, 2.2, 0xffe6c0, 0.22);
 
     // neon facing the camera, plus shop glow
     addNeonPlane(game, -8, 17, -24, 'HOTEL', 0xff3fa4, 17, Math.PI / 2);
@@ -434,33 +597,26 @@ window.BS = window.BS || {};
     addNeonPlane(game, -58, 10, 22, '24H', 0xb6ff5a, 9, Math.PI / 2);
     addNeonPlane(game, -124, 19, -24, 'RADIO', 0x8f7dff, 16, Math.PI / 2);
     addNeonPlane(game, -118, 9, 21, 'MAR', 0x35e6ff, 10, Math.PI / 2);
+    // a near sign so the foreground crowd stands in coloured light
+    addNeonPlane(game, 31, 11.5, 20.5, 'BAR', 0xffb347, 8.5, Math.PI / 2);
 
     addLightPool(game, -6, -6, 0xff3fa4, 26, 0.3);
     addLightPool(game, -60, 6, 0xffb347, 22, 0.24);
-    addLightPool(game, 40, 2, 0xffc46b, 30, 0.35);
-    addLightPool(game, 46, -2.6, 0xffd9a0, 17, 0.42);
+    addLightPool(game, 30, 8, 0xffb347, 24, 0.34);
+    addLightPool(game, 29, -2.2, 0xffd9a0, 18, 0.4);
+    addLightPool(game, 12, 4.6, 0xffe0b0, 20, 0.3);
+    addLightPool(game, -21, 4.6, 0xffe0b0, 16, 0.22);
+    addLightPool(game, -1.0, 5.2, 0xff2438, 15, 0.26);
+    addLightPool(game, -1.0, 1.0, 0x2f5bff, 13, 0.22);
+
     var carLamp = new THREE.PointLight(0xffd2a0, 2.2, 22, 1.5);
-    carLamp.position.set(47, 5.2, -2.2);
+    carLamp.position.set(26, 5.2, -2.2);
     game.scene.add(carLamp);
     game.shotExtra.push(carLamp);
-    // headlight wash in front of the oncoming pair
-    addLightPool(game, -8, 4.6, 0xffe0b0, 16, 0.22);
-    addLightPool(game, -44, 4.6, 0xffe0b0, 14, 0.18);
 
-    // headlight cones on the wet road
-    var beamMat = new THREE.MeshBasicMaterial({
-      map: BS.Tex.glow(), color: 0xffe3b0, transparent: true, opacity: 0.5,
-      blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false
-    });
-    var beam = new THREE.Mesh(new THREE.PlaneGeometry(9, 32), beamMat);
-    beam.rotation.x = -Math.PI / 2;
-    beam.position.set(26, 0.08, -1.2);
-    game.scene.add(beam);
-    game.shotExtra.push(beam);
-
-    var spot = new THREE.SpotLight(0xffe0b0, 2.4, 60, 0.62, 0.7, 1.4);
-    spot.position.set(40, 1.1, -1.2);
-    spot.target.position.set(-10, 0, -1.2);
+    var spot = new THREE.SpotLight(0xffe0b0, 2.6, 64, 0.6, 0.72, 1.4);
+    spot.position.set(24.6, 1.05, -2.2);
+    spot.target.position.set(-26, 0, -2.2);
     game.scene.add(spot);
     game.scene.add(spot.target);
     game.shotHeadlight = spot;
@@ -468,13 +624,14 @@ window.BS = window.BS || {};
     game.missions.objective = 'Sin trabajo activo — la ciudad respira';
     game.missions.setMarker(new THREE.Vector3(-120, 0, 60), 0xffc46b);
 
-    placeWalker(game, 0, -18, 13.0, Math.PI, 1.2, 0.6);
-    placeWalker(game, 1, -38, -12.6, 0, 1.3, 1.8);
-    placeWalker(game, 2, 8, 12.4, Math.PI, 1.25, 2.4);
-    placeWalker(game, 3, 20, -12.4, 0, 1.3, 0.9);
-    placeWalker(game, 4, 33, 12.6, Math.PI, 1.2, 3.1);
+    // two under the BAR sign, two further down the block
+    placeWalker(game, 0, 26.5, 4.0, Math.PI * 1.3, 1.15, 0.6);
+    placeWalker(game, 1, 27.6, 2.4, Math.PI * 0.22, 1.25, 2.2);
+    placeWalker(game, 2, -6.0, 12.4, Math.PI, 1.2, 3.4);
+    placeWalker(game, 3, -40.0, -12.6, 0, 1.3, 0.9);
+    placeWalker(game, 4, 8.0, 12.8, Math.PI, 1.2, 4.2);
 
-    setPose(game, 56, 2.05, 1.1, -60, 8.0, -4.0, 58);
+    setPose(game, 38.0, 2.15, 3.2, -60.0, 8.2, -3.0, 56);
   }
 
   var Shots = {
@@ -524,21 +681,21 @@ window.BS = window.BS || {};
       }
       if (name === 'mission') {
         // muzzle flash and tracer, locked on a rival down the quay
-        var from = new THREE.Vector3(-336.0, 1.32, 490.4);
-        var to = new THREE.Vector3(-338.0, 1.24, 484.2);
+        var from = new THREE.Vector3(-335.4, 1.34, 490.8);
+        var to = new THREE.Vector3(-336.4, 1.22, 483.6);
         if (Math.sin(t * 21) > -0.2) {
           BS.Fx.muzzle(from, to);
           BS.Fx.tracer(from, to, 0xffe0a0);
         }
         if (Math.sin(t * 7) > 0.62) {
-          BS.Fx.tracer(from, new THREE.Vector3(-333.2, 1.2, 482.0), 0xffd28a);
-          BS.Fx.spark(-338.0, 1.24, 484.2);
-          BS.Fx.spark(-342.2, 1.18, 480.8);
+          BS.Fx.tracer(from, new THREE.Vector3(-331.2, 1.2, 483.0), 0xffd28a);
+          BS.Fx.spark(-336.4, 1.24, 483.6);
+          BS.Fx.spark(-334.4, 1.18, 481.8);
         }
         if (BS.HUD && BS.HUD.damageEl) BS.HUD.damageEl.style.opacity = '0.3';
         for (var r = 0; r < 3; r++) {
           if (Math.sin(t * 9 + r * 2) > 0.55) {
-            var rf = new THREE.Vector3(-338 + r * 3, 1.32, 482.6 - r * 1.2);
+            var rf = new THREE.Vector3(-335.2 + r * 2.2, 1.32, 482.0 - r * 1.1);
             BS.Fx.muzzle(rf, from);
           }
         }

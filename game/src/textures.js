@@ -48,9 +48,9 @@ window.BS = window.BS || {};
     return cached('asphalt', function () {
       var rng = seeded('asphalt');
       var c = makeCanvas(256, 256), ctx = c.getContext('2d');
-      ctx.fillStyle = '#3a3c41';
+      ctx.fillStyle = '#575b63';
       ctx.fillRect(0, 0, 256, 256);
-      noise(ctx, 256, 256, rng, 2600, ['#45474d', '#313338', '#4c4e55', '#2b2c31'], 1, 3, 0.75);
+      noise(ctx, 256, 256, rng, 2600, ['#63676f', '#4a4e56', '#6d7178', '#41454c'], 1, 3, 0.75);
       // tar patches
       for (var i = 0; i < 5; i++) {
         ctx.globalAlpha = 0.22;
@@ -149,17 +149,23 @@ window.BS = window.BS || {};
     return cached('glass:' + tintHex + ':' + style, function () {
       var rng = seeded('glass:' + tintHex + ':' + style);
       var W = 256, H = 256;
-      var cols = style === 'fins' ? 10 : style === 'bands' ? 8 : 6;
-      var rows = style === 'bands' ? 8 : style === 'fins' ? 10 : 8;
+      var cols = style === 'fins' ? 10 : style === 'bands' ? 8
+        : style === 'curtain' ? 12 : style === 'louvre' ? 7 : 6;
+      var rows = style === 'bands' ? 8 : style === 'fins' ? 10
+        : style === 'curtain' ? 7 : style === 'louvre' ? 9 : 8;
       var cw = W / cols, ch = H / rows;
       var base = makeCanvas(W, H), b = base.getContext('2d');
       var lit = makeCanvas(W, H), l = lit.getContext('2d');
 
+      // sky reflection: dark and cool where the street shades the base, warm where the
+      // low sun grazes the top. Keeps glass towers from reading as flat grey.
       var tint = new THREE.Color(tintHex);
-      var top = tint.clone().lerp(new THREE.Color(0xdfeef5), 0.4);
-      var bot = tint.clone().multiplyScalar(0.72);
+      var top = tint.clone().lerp(new THREE.Color(0xffd7a4), 0.44);
+      var mid = tint.clone().lerp(new THREE.Color(0x9dc0d6), 0.24);
+      var bot = tint.clone().lerp(new THREE.Color(0x14263a), 0.46);
       var g = b.createLinearGradient(0, 0, 0, H);
       g.addColorStop(0, '#' + top.getHexString());
+      g.addColorStop(0.52, '#' + mid.getHexString());
       g.addColorStop(1, '#' + bot.getHexString());
       b.fillStyle = g; b.fillRect(0, 0, W, H);
       l.fillStyle = '#000'; l.fillRect(0, 0, W, H);
@@ -179,6 +185,16 @@ window.BS = window.BS || {};
             px = x + 1; py = y + ch * 0.42; w = cw - 2; h = ch * 0.54;
           } else if (style === 'fins') {
             px = x + 2; py = y + 2; w = cw * 0.52; h = ch - 4;
+          } else if (style === 'curtain') {
+            // curtain wall: glass edge to edge, dark transom at each floor line
+            b.fillStyle = 'rgba(20,30,40,0.65)';
+            b.fillRect(x, y + ch - 2.4, cw, 2.4);
+            px = x + 0.7; py = y + 0.7; w = cw - 1.4; h = ch - 3.6;
+          } else if (style === 'louvre') {
+            // louvred plant rooms / hotel bathrooms: slatted band over a dark slot
+            b.fillStyle = '#' + spandrel.getHexString();
+            b.fillRect(x, y, cw, ch);
+            px = x + 1.4; py = y + ch * 0.3; w = cw - 2.8; h = ch * 0.52;
           } else {
             px = x + 3; py = y + 3; w = cw - 6; h = ch - 6;
           }
@@ -199,6 +215,13 @@ window.BS = window.BS || {};
             b.fillStyle = 'rgba(30,34,38,0.35)';
             b.fillRect(x + cw * 0.92, y, cw * 0.08, ch);
           }
+          if (style === 'louvre') {
+            for (var sl = 0; sl < 6; sl++) {
+              var sy = py + 1 + sl * (h / 6);
+              b.fillStyle = sl % 2 ? 'rgba(26,34,42,0.46)' : 'rgba(208,216,220,0.28)';
+              b.fillRect(px, sy, w, 1.7);
+            }
+          }
           // sun glint
           if (rng.chance(0.16)) {
             b.globalAlpha = 0.26;
@@ -217,7 +240,7 @@ window.BS = window.BS || {};
       }
       // mullion grid
       b.strokeStyle = 'rgba(30,42,52,0.7)';
-      b.lineWidth = style === 'bands' ? 1.2 : 2;
+      b.lineWidth = style === 'bands' || style === 'curtain' ? 1.2 : 2;
       for (var i = 0; i <= cols; i++) { b.beginPath(); b.moveTo(i * cw, 0); b.lineTo(i * cw, H); b.stroke(); }
       for (var j = 0; j <= rows; j++) { b.beginPath(); b.moveTo(0, j * ch); b.lineTo(W, j * ch); b.stroke(); }
 
@@ -497,6 +520,169 @@ window.BS = window.BS || {};
     });
   }
 
+  // ------------------------------------------------------- ground contact kit
+  // Soft dark ellipse: alpha carries the falloff, so it composites over any surface.
+  function contactShadow() {
+    return cached('contactShadow', function () {
+      var c = makeCanvas(128, 128), b = c.getContext('2d');
+      b.clearRect(0, 0, 128, 128);
+      var g = b.createRadialGradient(64, 64, 2, 64, 64, 63);
+      g.addColorStop(0.0, 'rgba(8,10,14,0.62)');
+      g.addColorStop(0.24, 'rgba(8,10,14,0.50)');
+      g.addColorStop(0.5, 'rgba(10,12,16,0.28)');
+      g.addColorStop(0.74, 'rgba(12,14,18,0.11)');
+      g.addColorStop(0.9, 'rgba(12,14,18,0.03)');
+      g.addColorStop(1.0, 'rgba(12,14,18,0)');
+      b.fillStyle = g;
+      b.beginPath();
+      b.ellipse(64, 64, 63, 63, 0, 0, Math.PI * 2);
+      b.fill();
+      var t = toTexture(c);
+      t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+      // a ground decal is minified hard at grazing angles: mip averaging would
+      // wash the falloff out, so sample the base level
+      t.generateMipmaps = false;
+      t.minFilter = THREE.LinearFilter;
+      t.magFilter = THREE.LinearFilter;
+      return t;
+    });
+  }
+
+  // Dark band where a facade meets the pavement.
+  function baseAO() {
+    return cached('baseAO', function () {
+      var c = makeCanvas(8, 64), b = c.getContext('2d');
+      var g = b.createLinearGradient(0, 64, 0, 0);
+      g.addColorStop(0.0, 'rgba(6,8,12,0.72)');
+      g.addColorStop(0.35, 'rgba(10,14,20,0.34)');
+      g.addColorStop(0.7, 'rgba(14,18,24,0.10)');
+      g.addColorStop(1.0, 'rgba(14,18,24,0)');
+      b.fillStyle = g;
+      b.fillRect(0, 0, 8, 64);
+      var t = toTexture(c);
+      t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+      t.generateMipmaps = false; t.minFilter = THREE.LinearFilter;
+      return t;
+    });
+  }
+
+  // Full-height tint laid over glass: cold shadow at the base, sunlit sky at the top.
+  function skyGradient() {
+    return cached('skyGradient', function () {
+      var c = makeCanvas(8, 128), b = c.getContext('2d');
+      var g = b.createLinearGradient(0, 128, 0, 0);
+      g.addColorStop(0.0, 'rgba(6,18,38,0.66)');
+      g.addColorStop(0.34, 'rgba(20,44,74,0.34)');
+      g.addColorStop(0.62, 'rgba(120,156,186,0.10)');
+      g.addColorStop(0.86, 'rgba(255,206,150,0.20)');
+      g.addColorStop(1.0, 'rgba(255,196,132,0.34)');
+      b.fillStyle = g;
+      b.fillRect(0, 0, 8, 128);
+      var t = toTexture(c);
+      t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+      t.generateMipmaps = false; t.minFilter = THREE.LinearFilter;
+      return t;
+    });
+  }
+
+  // Painted advertising, the sort that hangs off a downtown rooftop frame.
+  function billboard(index) {
+    return cached('billboard:' + index, function () {
+      var rng = seeded('billboard:' + index);
+      var c = makeCanvas(256, 128), b = c.getContext('2d');
+      var grounds = ['#1f3b63', '#8f2f38', '#123c33', '#c8801f', '#2b2b4a', '#6a1f42'];
+      var inks = ['#ffe9c8', '#f7e2b6', '#d8f0ff', '#ffd0a0'];
+      b.fillStyle = grounds[index % grounds.length];
+      b.fillRect(0, 0, 256, 128);
+      // print texture and a soft light falloff
+      noise(b, 256, 128, rng, 700, ['#ffffff', '#000000'], 1, 3, 0.06);
+      var vg = b.createLinearGradient(0, 0, 0, 128);
+      vg.addColorStop(0, 'rgba(255,255,255,0.14)');
+      vg.addColorStop(0.6, 'rgba(0,0,0,0.05)');
+      vg.addColorStop(1, 'rgba(0,0,0,0.34)');
+      b.fillStyle = vg; b.fillRect(0, 0, 256, 128);
+      // colour field
+      b.fillStyle = inks[index % inks.length];
+      b.globalAlpha = 0.92;
+      b.fillRect(14, 14, 120, 26);
+      b.fillRect(14, 48, 74, 12);
+      b.globalAlpha = 1;
+      b.fillStyle = '#0d1220';
+      b.fillRect(24, 22, 96, 10);
+      // headline
+      b.fillStyle = inks[(index + 2) % inks.length];
+      b.font = '700 34px "Trebuchet MS", "Segoe UI", sans-serif';
+      b.fillText(['VICE', 'SOL', 'MAR', 'RADIO', 'CASA', 'NORTE'][index % 6], 16, 106);
+      b.font = '700 15px "Segoe UI", sans-serif';
+      b.globalAlpha = 0.75;
+      b.fillText(['NOCTURNO', '24 HORAS', 'MUELLES', 'EN VIVO', 'DEL MAR', 'SUR'][index % 6], 150, 104);
+      b.globalAlpha = 1;
+      return toTexture(c);
+    });
+  }
+
+  // Shipping container: corrugation ribs, rust weeping from the joints, grime at the sill.
+  function containerSkin(colorHex) {
+    return cached('container:' + colorHex, function () {
+      var rng = seeded('container:' + colorHex);
+      var c = makeCanvas(256, 128), b = c.getContext('2d');
+      b.fillStyle = hex(colorHex);
+      b.fillRect(0, 0, 256, 128);
+      // vertical corrugation
+      for (var x = 0; x < 256; x += 11) {
+        b.fillStyle = 'rgba(255,255,255,0.10)';
+        b.fillRect(x, 0, 3, 128);
+        b.fillStyle = 'rgba(0,0,0,0.24)';
+        b.fillRect(x + 5, 0, 4, 128);
+      }
+      // top and bottom rails
+      b.fillStyle = 'rgba(0,0,0,0.34)'; b.fillRect(0, 0, 256, 7); b.fillRect(0, 121, 256, 7);
+      b.fillStyle = 'rgba(255,255,255,0.10)'; b.fillRect(0, 7, 256, 3);
+      // rust weeping down from the rails
+      for (var i = 0; i < 34; i++) {
+        var rx = rng.float(0, 256), len = rng.float(12, 84);
+        var gr = b.createLinearGradient(0, 7, 0, 7 + len);
+        gr.addColorStop(0, 'rgba(122,62,26,' + rng.float(0.22, 0.55).toFixed(2) + ')');
+        gr.addColorStop(1, 'rgba(96,52,24,0)');
+        b.fillStyle = gr;
+        b.fillRect(rx, 7, rng.float(1.5, 4.5), len);
+      }
+      // dents and scuffs
+      noise(b, 256, 128, rng, 380, ['#000000', '#ffffff', '#5a3a20'], 1, 3, 0.16);
+      var gr2 = b.createLinearGradient(0, 128, 0, 74);
+      gr2.addColorStop(0, 'rgba(12,10,8,0.42)');
+      gr2.addColorStop(1, 'rgba(12,10,8,0)');
+      b.fillStyle = gr2; b.fillRect(0, 74, 256, 54);
+      return toTexture(c);
+    });
+  }
+
+  // Blade sign: one letter per row so it reads at street distance.
+  function neonStack(text, colorHex) {
+    return cached('neonstack:' + text + ':' + colorHex, function () {
+      var chars = String(text).split('');
+      var cw = 112, ch = 108;
+      var c = makeCanvas(cw, Math.max(1, chars.length) * ch), b = c.getContext('2d');
+      b.clearRect(0, 0, c.width, c.height);
+      b.textAlign = 'center';
+      b.textBaseline = 'middle';
+      b.font = '700 80px "Trebuchet MS", "Segoe UI", sans-serif';
+      var col = hex(colorHex);
+      for (var i = 0; i < chars.length; i++) {
+        var y = i * ch + ch / 2;
+        b.shadowColor = col;
+        b.shadowBlur = 28;
+        b.fillStyle = col;
+        b.fillText(chars[i], cw / 2, y);
+        b.fillText(chars[i], cw / 2, y);
+        b.shadowBlur = 0;
+        b.fillStyle = 'rgba(255,255,255,0.88)';
+        b.fillText(chars[i], cw / 2, y);
+      }
+      return toTexture(c);
+    });
+  }
+
   BS.Tex = {
     asphalt: asphalt,
     sidewalk: sidewalk,
@@ -514,6 +700,12 @@ window.BS = window.BS || {};
     leafCluster: leafCluster,
     wood: wood,
     roof: tileRoof,
+    contactShadow: contactShadow,
+    baseAO: baseAO,
+    skyGradient: skyGradient,
+    billboard: billboard,
+    containerSkin: containerSkin,
+    neonStack: neonStack,
     hex: hex
   };
 })(window.BS);

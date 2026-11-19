@@ -133,6 +133,46 @@ window.BS = window.BS || {};
     return x < W.bay.maxX && z > W.bay.minZ;
   }
 
+  // Height of the walkable surface at a point: the pavements sit one curb above the road.
+  function groundYAt(x, z) {
+    var step = W.step;
+    if (z > 470) return 0.03;
+    var lx = (x + 600) % step, lz = (z + 600) % step;
+    if (lx < 0) lx += step;
+    if (lz < 0) lz += step;
+    var onBlock = Math.abs(lx - 60) < 45 && Math.abs(lz - 60) < 45;
+    if (onBlock && !inBay(x, z) && z < 470) return 0.35;
+    return 0;
+  }
+
+  // Vertical strips hugging the four faces of a box: base shading and glass tinting.
+  function pushWallQuads(sink, x, z, w, d, y0, y1, pad) {
+    var hw = w / 2 + pad, hd = d / 2 + pad;
+    var p = sink.pos, u = sink.uv;
+    function quad(ax, az, bx, bz) {
+      p.push(ax, y0, az, bx, y0, bz, bx, y1, bz);
+      p.push(ax, y0, az, bx, y1, bz, ax, y1, az);
+      u.push(0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1);
+    }
+    quad(x - hw, z + hd, x + hw, z + hd);
+    quad(x + hw, z + hd, x + hw, z - hd);
+    quad(x + hw, z - hd, x - hw, z - hd);
+    quad(x - hw, z - hd, x - hw, z + hd);
+  }
+
+  function sinkMesh(sink, mat) {
+    if (!sink.pos.length) return null;
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(sink.pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(sink.uv, 2));
+    g.computeVertexNormals();
+    var mesh = new THREE.Mesh(g, mat);
+    mesh.renderOrder = 1;
+    mesh.matrixAutoUpdate = false;
+    mesh.frustumCulled = false;
+    return mesh;
+  }
+
   // -------------------------------------------------------------- materials
   function facadeMaterial(city, kind, tint, style) {
     var key = kind + ':' + tint + ':' + (style || 'grid');
@@ -321,21 +361,32 @@ window.BS = window.BS || {};
         'void main() {',
         '  float depthMix = clamp((vWorld.z - 620.0) / 900.0, 0.0, 1.0);',
         '  vec3 col = mix(uShallow, uDeep, smoothstep(0.0, 1.0, depthMix));',
-        // five swell lines rolling in toward the beach
-        '  float lines = 0.0;',
-        '  for (int i = 0; i < 5; i++) {',
-        '    float z0 = 632.0 + float(i) * 76.0 + sin(vWorld.x * 0.02 + uTime * 0.4 + float(i) * 1.7) * 15.0;',
-        '    lines += exp(-pow((vWorld.z - z0) / 6.5, 2.0)) * (1.0 - float(i) * 0.13);',
+        // nine soft swell bands: wide, low contrast, spacing eased with distance
+        '  float bands = 0.0;',
+        '  for (int i = 0; i < 9; i++) {',
+        '    float fi = float(i);',
+        '    float z0 = 640.0 + fi * 56.0 + fi * fi * 2.4',
+        '      + sin(vWorld.x * 0.017 + uTime * 0.35 + fi * 1.9) * (10.0 + fi * 4.0);',
+        '    float wid = 17.0 + fi * 7.0;',
+        '    bands += exp(-pow((vWorld.z - z0) / wid, 2.0)) * (0.92 - fi * 0.062);',
         '  }',
-        '  col += vec3(0.50, 0.74, 0.78) * clamp(lines, 0.0, 1.0) * 0.34;',
+        '  col += vec3(0.38, 0.64, 0.70) * clamp(bands, 0.0, 1.0) * 0.078;',
         // fine ripple keeps the surface from reading as a flat sheet
-        '  float rip = sin(vWorld.x * 0.11 + uTime * 1.3) * sin(vWorld.z * 0.17 - uTime * 1.1);',
-        '  col += vec3(0.10, 0.17, 0.19) * rip * 0.5;',
-        // narrow sun path straight down the bay
+        '  float rip = sin(vWorld.x * 0.09 + uTime * 1.15) * sin(vWorld.z * 0.15 - uTime * 0.95);',
+        '  col += vec3(0.06, 0.10, 0.11) * rip * 0.5;',
+        // surf only along the shoreline curve, plus a wash up the wet sand
+        '  float zShore = 616.0 + sin(vWorld.x * 0.011) * 3.4 + sin(vWorld.x * 0.037 + 1.3) * 1.3;',
+        '  float wob = 2.4 + 1.7 * (sin(vWorld.x * 0.08 + uTime * 0.55) * 0.5 + 0.5);',
+        '  float foamMask = exp(-pow((vWorld.z - zShore) / wob, 2.0));',
+        '  float surf = smoothstep(0.45, 1.0, sin(vWorld.x * 0.05 + vWorld.z * 0.55 - uTime * 0.9) * 0.5 + 0.5);',
+        '  col = mix(col, vec3(0.93, 0.96, 0.95), clamp(foamMask * (0.30 + surf * 0.34), 0.0, 0.60));',
+        // broad sun glitter path, spreading and fading with distance
         '  float sunX = 40.0 + sin(uTime * 0.08) * 26.0;',
-        '  float band = exp(-pow((vWorld.x - sunX) / 80.0, 2.0));',
-        '  float g = pow(max(0.0, sin(vWorld.x * 0.7 + vWorld.z * 1.4 + uTime * 2.2)), 26.0);',
-        '  col += uSun * (band * 0.10 + g * (0.10 + band * 0.34));',
+        '  float spread = 55.0 + (vWorld.z - 616.0) * 0.26;',
+        '  float path = exp(-pow((vWorld.x - sunX) / spread, 2.0));',
+        '  float sparkle = pow(max(0.0, sin(vWorld.x * 0.42 + vWorld.z * 0.85 + uTime * 1.6)), 12.0);',
+        '  float fade = exp(-(vWorld.z - 616.0) / 820.0);',
+        '  col += uSun * path * (0.13 + sparkle * 0.42) * fade;',
         '  float d = distance(cameraPosition.xz, vWorld.xz);',
         '  float fog = 1.0 - exp(-pow(d * uFogDensity, 2.0));',
         '  col = pow(max(col, vec3(0.0)), vec3(0.4545));',
@@ -390,7 +441,7 @@ window.BS = window.BS || {};
     var rng = BS.makeRng(31337);
     var ground = new THREE.Mesh(
       new THREE.PlaneGeometry(2200, 2200),
-      new THREE.MeshStandardMaterial({ map: BS.Tex.asphalt(), roughness: 0.74, metalness: 0.16, color: 0xb0b6bd })
+      new THREE.MeshStandardMaterial({ map: BS.Tex.asphalt(), roughness: 0.62, metalness: 0.2, color: 0xd8dce2 })
     );
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
@@ -503,18 +554,68 @@ window.BS = window.BS || {};
       });
     }
 
-    // roof furniture
-    if (h > 26 && opts.roof !== false) {
-      var dark = 0x4b4d4f;
+    // damp shadow where the wall meets the pavement
+    if (baseY < 0.35) {
+      pushWallQuads(city.aoSink, opts.x, opts.z, w, d, baseY - 0.02, baseY + 3.1, 0.07);
+    }
+    // glass picks the sky up from top to bottom
+    if (opts.kind === 'glass') {
+      pushWallQuads(city.skySink, opts.x, opts.z, w, d, baseY + 0.12, baseY + h - 0.5, 0.1);
+    }
+
+    // roof furniture: parapet, tanks, plant, masts — seeded per footprint so it varies
+    if (opts.roof !== false) {
+      var rr = BS.makeRng(Math.round(opts.x * 31 + opts.z * 17 + h * 5) | 0);
+      var top = baseY + h - 0.24;
+      var metal = 0x73767a, tankCol = 0x9a9184;
       var parts = [];
-      parts.push(box(w * 0.22, 2.2, d * 0.22, opts.x + w * 0.2, baseY + h + 1.1, opts.z - d * 0.2, dark));
-      parts.push(box(w * 0.12, 3.0, d * 0.12, opts.x - w * 0.24, baseY + h + 1.5, opts.z + d * 0.18, 0x6a655c));
-      if (h > 70) parts.push(cyl(0.18, 0.3, 9, 5, opts.x, baseY + h + 4.5, opts.z, 0x8a8d90));
+      var ph = rr.float(0.5, 1.2);
+      parts.push(box(w + 0.7, ph, 0.55, opts.x, top + ph / 2, opts.z + d / 2 + 0.06, 0x64686c));
+      parts.push(box(w + 0.7, ph, 0.55, opts.x, top + ph / 2, opts.z - d / 2 - 0.06, 0x64686c));
+      parts.push(box(0.55, ph, d + 0.7, opts.x + w / 2 + 0.06, top + ph / 2, opts.z, 0x64686c));
+      parts.push(box(0.55, ph, d + 0.7, opts.x - w / 2 - 0.06, top + ph / 2, opts.z, 0x64686c));
+      if (w > 22 && rr.chance(0.6)) {
+        var tx = opts.x + rr.float(-w * 0.24, w * 0.24), tz = opts.z + rr.float(-d * 0.22, d * 0.22);
+        var tr = rr.float(1.4, 2.4), th2 = rr.float(2.4, 4.0);
+        for (var lg = 0; lg < 4; lg++) {
+          var ang = lg * Math.PI / 2 + 0.7;
+          parts.push(box(0.18, 1.5, 0.18, tx + Math.cos(ang) * tr * 0.66, top + 0.75, tz + Math.sin(ang) * tr * 0.66, metal));
+        }
+        parts.push(cyl(tr, tr, th2, 10, tx, top + 1.5 + th2 / 2, tz, tankCol));
+        parts.push(cyl(tr * 0.82, tr * 1.02, 0.6, 10, tx, top + 1.5 + th2 + 0.3, tz, 0x6d675c));
+        parts.push(cyl(tr * 0.55, tr * 0.55, 0.12, 10, tx, top + 1.5 + th2 + 0.66, tz, 0x585349));
+      }
+      var acCount = h > 46 ? 3 : 2;
+      for (var ac = 0; ac < acCount; ac++) {
+        var ax = opts.x + rr.float(-w * 0.3, w * 0.3), az = opts.z + rr.float(-d * 0.3, d * 0.3);
+        var awd = rr.float(1.5, 3.2);
+        parts.push(box(awd, rr.float(0.8, 1.5), awd * rr.float(0.55, 1.1), ax, top + 0.72, az, 0x7f8184));
+        parts.push(box(awd * 0.5, 0.14, awd * 0.5, ax, top + 1.42, az, 0x5d6063));
+      }
+      if (rr.chance(0.55)) {
+        parts.push(box(w * 0.16, rr.float(2.0, 3.0), d * 0.14,
+          opts.x - w * 0.24, top + 1.2, opts.z + d * 0.22, 0x76797d));
+      }
+      if (h > 44) {
+        var mh = rr.float(7, 17);
+        var mx = opts.x + rr.float(-w * 0.18, w * 0.18), mz = opts.z + rr.float(-d * 0.18, d * 0.18);
+        parts.push(cyl(0.1, 0.24, mh, 5, mx, top + mh / 2, mz, 0x9a9ea1));
+        parts.push(box(2.2, 0.1, 0.1, mx, top + mh * 0.72, mz, 0x9a9ea1));
+        parts.push(box(1.4, 0.1, 0.1, mx, top + mh * 0.5, mz, 0x9a9ea1));
+      }
       var roofMesh = new THREE.Mesh(merge(parts), new THREE.MeshStandardMaterial({
-        vertexColors: true, roughness: 0.8, metalness: 0.3
+        vertexColors: true, roughness: 0.82, metalness: 0.22
       }));
       roofMesh.castShadow = true;
+      roofMesh.receiveShadow = true;
       city.group.add(roofMesh);
+    }
+
+    // billboard on the roof line, facing the street
+    if (opts.billboard !== undefined && opts.billboard !== false) {
+      addBillboard(city, opts.x, baseY + h + 6.4, opts.z, opts.billboard,
+        opts.billboardRotY === undefined ? 0 : opts.billboardRotY,
+        opts.billboardIndex || 0);
     }
 
     // awning over the shop band
@@ -551,6 +652,74 @@ window.BS = window.BS || {};
       city.group.add(strip);
     }
     return mesh;
+  }
+
+  function addBillboard(city, x, y, z, w, rotY, index) {
+    var h = w * 0.5;
+    var tex = BS.Tex.billboard(index);
+    var face = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshStandardMaterial({
+      map: tex, roughness: 0.86, metalness: 0.0,
+      emissiveMap: tex, emissive: 0xffffff, emissiveIntensity: 0.05
+    }));
+    face.position.set(x, y, z);
+    face.rotation.y = rotY;
+    face.castShadow = false;
+    city.group.add(face);
+    city.nightMaterials.push(face.material);
+    face.material.userData.nightGlow = 0.5;
+
+    var frame = new THREE.Mesh(new THREE.BoxGeometry(w + 1.4, h + 1.4, 0.45),
+      new THREE.MeshStandardMaterial({ color: 0x2c3034, roughness: 0.74, metalness: 0.36 }));
+    frame.position.set(x, y, z);
+    frame.rotation.y = rotY;
+    frame.translateZ(-0.32);
+    city.group.add(frame);
+
+    var postMat = new THREE.MeshStandardMaterial({ color: 0x3b4045, roughness: 0.6, metalness: 0.5 });
+    for (var s = -1; s <= 1; s += 2) {
+      var post = new THREE.Mesh(new THREE.BoxGeometry(0.32, 6.0, 0.32), postMat);
+      post.position.set(
+        x + Math.cos(rotY) * s * w * 0.3, y - h / 2 - 2.6,
+        z - Math.sin(rotY) * s * w * 0.3);
+      post.castShadow = true;
+      city.group.add(post);
+    }
+    return face;
+  }
+
+  // Blade sign hanging off a corner: letters stacked, so it reads in a street view.
+  function addNeonStack(city, opts) {
+    var tex = BS.Tex.neonStack(opts.text, opts.color);
+    var bw = opts.width || 1.7;
+    var bh = bw * (opts.text.length * 0.92 + 0.5);
+    var mat = new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide
+    });
+    var sign = new THREE.Mesh(new THREE.PlaneGeometry(bw, bh), mat);
+    sign.position.set(opts.x, opts.y, opts.z);
+    sign.rotation.y = opts.rotY === undefined ? Math.PI / 2 : opts.rotY;
+    city.group.add(sign);
+    city.neonMaterials.push(mat);
+    mat.userData.nightOpacity = 1.0;
+
+    var glowMat = new THREE.SpriteMaterial({
+      map: BS.Tex.glow(), color: opts.color, transparent: true, opacity: 0.0,
+      blending: THREE.AdditiveBlending, depthWrite: false, fog: false
+    });
+    var glow = new THREE.Sprite(glowMat);
+    glow.scale.set(bw * 4.2, bh * 1.35, 1);
+    glow.position.copy(sign.position);
+    city.group.add(glow);
+    city.neonGlows.push(glowMat);
+
+    // a slim bracket back to the wall
+    var arm = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.1, 0.1),
+      new THREE.MeshStandardMaterial({ color: 0x2f3438, roughness: 0.7, metalness: 0.4 }));
+    arm.position.set(opts.x, opts.y + bh / 2 - 0.4, opts.z);
+    arm.rotation.y = sign.rotation.y;
+    arm.translateX(-0.75);
+    city.group.add(arm);
+    return sign;
   }
 
   function addNeon(city, opts) {
@@ -987,35 +1156,67 @@ window.BS = window.BS || {};
         if ((cx === -60 && cz === -300) || (cx === 180 && cz === 180)) continue;
 
         if (dist.id === 'downtown') {
-          var tw = rng.float(56, 78), td = rng.float(56, 78);
+          var tw = rng.float(54, 76), td = rng.float(54, 76);
           var roll = rng.float(0, 1);
-          var th = roll < 0.3 ? rng.float(30, 52) : roll < 0.7 ? rng.float(52, 98) : rng.float(98, 158);
-          var style = rng.pick(['grid', 'bands', 'fins']);
+          var th = roll < 0.28 ? rng.float(26, 48) : roll < 0.66 ? rng.float(50, 96) : rng.float(96, 156);
+          var style = rng.pick(['grid', 'bands', 'fins', 'curtain', 'louvre']);
           var tint = rng.pick(glassList);
-          var stone = th < 94 && rng.chance(0.28);
+          var stone = th < 94 && rng.chance(0.3);
           var kind = stone ? 'stucco' : 'glass';
-          if (stone) tint = rng.pick([0xe8d3b4, 0xc98a63, 0xdcc7a8, 0xb98f74]);
+          if (stone) { tint = rng.pick([0xe8d3b4, 0xc98a63, 0xdcc7a8, 0xb98f74]); style = 'grid'; }
           var shopSide = rng.pick(['z+', 'z-', 'x+', 'x-']);
           var shop = rng.chance(0.6);
-          addBuilding(city, {
-            x: cx + rng.float(-4, 4), z: cz + rng.float(-4, 4),
-            w: tw, d: td, h: th, kind: kind, tint: tint, style: style,
-            shops: shop, shopSide: shopSide,
-            awning: shop ? rng.pick([0x9c3b3b, 0x2f5f6e, 0xc8913c, 0x3e6b4a]) : null
-          });
-          // stepped crown on the tall ones
-          if (th > 92) {
-            var cw2 = tw * rng.float(0.48, 0.68), cd2 = td * rng.float(0.48, 0.68), ch2 = rng.float(12, 30);
+          var bx = cx + rng.float(-4, 4), bz = cz + rng.float(-4, 4);
+          var awnings = [0x9c3b3b, 0x2f5f6e, 0xc8913c, 0x3e6b4a];
+
+          // a darker two-storey plinth grounds the tower on the pavement
+          var plinth = th > 52 && rng.chance(0.45);
+          var baseH = plinth ? rng.float(6.5, 10.5) : 0;
+
+          // setback: a narrower shaft, then a crown in a different window pattern
+          var tiered = th > 44 && rng.chance(0.62);
+          var shaftH = tiered ? th * rng.float(0.46, 0.72) : th;
+
+          if (plinth) {
             addBuilding(city, {
-              x: cx + rng.float(-2, 2), z: cz + rng.float(-2, 2),
-              w: cw2, d: cd2, h: ch2, baseY: 0.3 + th,
-              kind: kind, tint: tint, style: style, roof: true, noCollide: true
+              x: bx, z: bz, w: tw + 2.8, d: td + 2.8, h: baseH,
+              kind: 'stucco', tint: rng.pick([0x6f6a62, 0x555a60, 0x7b6a56]), style: 'grid',
+              shops: shop, shopSide: shopSide,
+              awning: shop ? rng.pick(awnings) : null
             });
-          } else if (th > 48 && rng.chance(0.35)) {
-            var pw = tw * 0.9, pd2 = td * 0.9;
+          }
+          addBuilding(city, {
+            x: bx, z: bz, w: tw, d: td, h: shaftH, baseY: 0.3 + baseH,
+            kind: kind, tint: tint, style: style,
+            shops: !plinth && shop, shopSide: shopSide,
+            awning: !plinth && shop ? rng.pick(awnings) : null
+          });
+          if (tiered) {
+            var style2 = rng.pick(['grid', 'bands', 'fins', 'curtain', 'louvre']);
+            var tint2 = stone ? rng.pick([0xd9c3a3, 0xc09272, 0xb98f74]) : rng.pick(glassList);
             addBuilding(city, {
-              x: cx, z: cz, w: pw, d: pd2, h: rng.float(3, 7), baseY: 0.3 + th,
-              kind: kind, tint: tint, style: style, roof: false, noCollide: true
+              x: bx, z: bz,
+              w: tw * rng.float(0.5, 0.78), d: td * rng.float(0.5, 0.78),
+              h: th - shaftH + 0.2, baseY: 0.3 + baseH + shaftH,
+              kind: stone ? 'stucco' : 'glass', tint: tiered ? tint2 : tint,
+              style: style2, roof: true, noCollide: true
+            });
+          }
+          // rooftop billboard facing the avenue
+          if (th > 58 && rng.chance(0.34)) {
+            addBillboard(city, bx, 0.3 + th + 8.2, bz + td / 2 + 1.4,
+              rng.float(14, 21), 0, rng.int(0, 5));
+          } else if (th < 52 && rng.chance(0.22)) {
+            addBillboard(city, bx, 0.3 + th + 6.6, bz + td / 2 + 1.2,
+              rng.float(10, 14), 0, rng.int(0, 5));
+          }
+          // corner blade sign
+          if (rng.chance(0.42)) {
+            addNeonStack(city, {
+              x: bx + tw / 2 + 1.1, z: bz + td / 2 - 2.2,
+              y: 0.3 + baseH + rng.float(8, 17),
+              text: rng.pick(['HOTEL', 'BAR', 'SOL', 'RADIO', 'CLUB', 'MAR']),
+              color: rng.pick(P.neon), width: 1.85, rotY: Math.PI / 2
             });
           }
           // neon on the avenue-facing faces
@@ -1023,13 +1224,13 @@ window.BS = window.BS || {};
             var color = rng.pick(P.neon);
             var text = rng.pick(['HOTEL', 'CLUB', 'SOL', 'MAR', 'RADIO', '24H', 'CAFÉ', 'SUR', 'MOTEL', 'BAHÍA', 'NOCTURNO']);
             var face = shopSide;
-            var nx = cx, nz = cz, rotY = 0;
-            if (face === 'z+') { nz = cz + td / 2 + 1.2; rotY = 0; }
-            else if (face === 'z-') { nz = cz - td / 2 - 1.2; rotY = Math.PI; }
-            else if (face === 'x+') { nx = cx + tw / 2 + 1.2; rotY = Math.PI / 2; }
-            else { nx = cx - tw / 2 - 1.2; rotY = -Math.PI / 2; }
+            var nx = bx, nz = bz, rotY = 0;
+            if (face === 'z+') { nz = bz + td / 2 + 1.2; rotY = 0; }
+            else if (face === 'z-') { nz = bz - td / 2 - 1.2; rotY = Math.PI; }
+            else if (face === 'x+') { nx = bx + tw / 2 + 1.2; rotY = Math.PI / 2; }
+            else { nx = bx - tw / 2 - 1.2; rotY = -Math.PI / 2; }
             addNeon(city, {
-              x: nx, z: nz, y: rng.float(9, Math.max(12, th * 0.42)),
+              x: nx, z: nz, y: 0.3 + baseH + rng.float(9, Math.max(12, th * 0.42)),
               text: text, color: color, width: rng.float(11, 17), rotY: rotY
             });
           }
@@ -1155,6 +1356,8 @@ window.BS = window.BS || {};
       nightMaterials: [],
       neonMaterials: [],
       neonGlows: [],
+      aoSink: { pos: [], uv: [] },
+      skySink: { pos: [], uv: [] },
       night: false
     };
     scene.add(city.group);
@@ -1175,6 +1378,17 @@ window.BS = window.BS || {};
       roofs.castShadow = true;
       scene.add(roofs);
     }
+    // base shading along every wall/ground join, and the glass sky reflection
+    var aoMesh = sinkMesh(city.aoSink, new THREE.MeshBasicMaterial({
+      map: BS.Tex.baseAO(), transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      toneMapped: true, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3
+    }));
+    if (aoMesh) { aoMesh.renderOrder = 1; scene.add(aoMesh); city.baseAO = aoMesh; }
+    var skyMesh = sinkMesh(city.skySink, new THREE.MeshBasicMaterial({
+      map: BS.Tex.skyGradient(), transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      toneMapped: true, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3
+    }));
+    if (skyMesh) { skyMesh.renderOrder = 1; scene.add(skyMesh); city.skyTint = skyMesh; }
     buildPalms(city, scene);
     buildStreetlights(city, scene);
     buildStreetKit(city, scene);
@@ -1215,6 +1429,7 @@ window.BS = window.BS || {};
     districtAt: districtAt,
     streetLine: streetLine,
     inBay: inBay,
+    groundYAt: groundYAt,
     setNight: setNight,
     makePalmVariant: makePalmVariant
   };
