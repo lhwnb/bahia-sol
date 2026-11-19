@@ -16,38 +16,140 @@ window.BS = window.BS || {};
     return m;
   }
 
+  // One material for the whole avatar: every segment carries baked vertex
+  // colours, so the body costs one material and a handful of draw calls.
+  var avatarMat = new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 0.86, metalness: 0.0
+  });
+
+  // Tapered prism (different width/depth at top and bottom). Winding is fixed
+  // per face against the outward direction, so nothing renders inside out.
+  function taper(wt, dt, wb, db, h) {
+    var hy = h * 0.5;
+    var v = [
+      [-wb / 2, -hy, -db / 2], [wb / 2, -hy, -db / 2], [wb / 2, -hy, db / 2], [-wb / 2, -hy, db / 2],
+      [-wt / 2, hy, -dt / 2], [wt / 2, hy, -dt / 2], [wt / 2, hy, dt / 2], [-wt / 2, hy, dt / 2]
+    ];
+    var faces = [[4, 5, 6, 7], [3, 2, 1, 0], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [3, 0, 4, 7]];
+    var pos = [], nor = [], uv = [];
+    for (var f = 0; f < faces.length; f++) {
+      var q = faces[f];
+      var a = v[q[0]], b = v[q[1]], c = v[q[2]], d = v[q[3]];
+      var ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+      var wx = c[0] - a[0], wy = c[1] - a[1], wz = c[2] - a[2];
+      var nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+      var cx = (a[0] + b[0] + c[0] + d[0]) * 0.25;
+      var cy = (a[1] + b[1] + c[1] + d[1]) * 0.25;
+      var cz = (a[2] + b[2] + c[2] + d[2]) * 0.25;
+      if (nx * cx + ny * cy + nz * cz < 0) {
+        var t = b; b = d; d = t;
+        nx = -nx; ny = -ny; nz = -nz;
+      }
+      var len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+      nx /= len; ny /= len; nz /= len;
+      var tri = [a, b, c, a, c, d];
+      for (var k = 0; k < 6; k++) {
+        pos.push(tri[k][0], tri[k][1], tri[k][2]);
+        nor.push(nx, ny, nz);
+      }
+      uv.push(0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1);
+    }
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    return g;
+  }
+
+  function segment(parts) {
+    var m = new THREE.Mesh(BS.Geo.merge(parts), avatarMat);
+    m.castShadow = true;
+    return m;
+  }
+
   function buildAvatar() {
     var g = new THREE.Group();
     var jacket = 0xd8cdb4, jeans = 0x3c4c66, skin = 0xc98f63, cap = 0xb03a30;
+    var shirt = 0xe6e0d2, shoe = 0x26241f, hairCol = 0x2a201a, belt = 0x2c2a26;
 
-    var torso = makeLimb(0.54, 0.64, 0.32, jacket);
-    torso.position.y = 1.2;
-    g.add(torso);
-    var shirt = makeLimb(0.3, 0.34, 0.34, 0xe6e0d2);
-    shirt.position.set(0, 1.24, 0.02);
-    g.add(shirt);
+    // ---- torso: shoulders wide, waist narrow ------------------------------
+    var chest = taper(0.53, 0.305, 0.355, 0.245, 0.44);
+    chest.translate(0, 1.30, 0);
+    var yoke = BS.Geo.box(0.555, 0.095, 0.315, 0, 1.495, 0, jacket);
+    var collar = BS.Geo.box(0.215, 0.075, 0.225, 0, 1.535, 0.005, shirt);
+    var zip = BS.Geo.box(0.045, 0.36, 0.02, 0, 1.30, 0.152, 0x8f8674);
+    g.add(segment([BS.Geo.paint(chest, jacket), yoke, collar, zip]));
 
-    var head = makeLimb(0.27, 0.3, 0.27, skin);
-    head.position.y = 1.68;
-    g.add(head);
-    var brim = makeLimb(0.31, 0.07, 0.31, cap);
-    brim.position.y = 1.85;
-    g.add(brim);
+    var pelvisGeo = taper(0.375, 0.265, 0.335, 0.245, 0.24);
+    pelvisGeo.translate(0, 1.00, 0);
+    var beltGeo = BS.Geo.box(0.385, 0.055, 0.275, 0, 1.115, 0, belt);
+    g.add(segment([BS.Geo.paint(pelvisGeo, jeans), beltGeo]));
 
-    var legL = new THREE.Group(), legR = new THREE.Group();
-    legL.position.set(-0.14, 0.94, 0);
-    legR.position.set(0.14, 0.94, 0);
-    var legLMesh = makeLimb(0.18, 0.84, 0.2, jeans); legLMesh.position.y = -0.42;
-    var legRMesh = makeLimb(0.18, 0.84, 0.2, jeans); legRMesh.position.y = -0.42;
-    legL.add(legLMesh); legR.add(legRMesh);
+    // ---- head, neck, cap --------------------------------------------------
+    var neckGeo = new THREE.CylinderGeometry(0.056, 0.063, 0.11, 7);
+    neckGeo.translate(0, 1.552, 0);
+    var skull = new THREE.SphereGeometry(0.126, 10, 8);
+    skull.scale(1, 1.1, 0.98);
+    skull.translate(0, 1.675, 0);
+    var dome = new THREE.SphereGeometry(0.134, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.55);
+    dome.translate(0, 1.677, 0);
+    var brim = BS.Geo.box(0.205, 0.03, 0.135, 0, 1.657, 0.155, cap);
+    var hairBand = BS.Geo.box(0.205, 0.075, 0.06, 0, 1.632, -0.098, hairCol);
+    g.add(segment([
+      BS.Geo.paint(neckGeo, skin), BS.Geo.paint(skull, skin),
+      BS.Geo.paint(dome, cap), brim, hairBand
+    ]));
+
+    // ---- legs: hip → thigh, knee → shin + foot ----------------------------
+    function makeLeg(side) {
+      var hip = new THREE.Group();
+      hip.position.set(0.105 * side, 0.94, 0);
+      var thighGeo = taper(0.17, 0.18, 0.128, 0.138, 0.44);
+      thighGeo.translate(0, -0.22, 0);
+      hip.add(segment([BS.Geo.paint(thighGeo, jeans)]));
+
+      var knee = new THREE.Group();
+      knee.position.set(0, -0.44, 0);
+      knee.rotation.x = 0.10;
+      var shinGeo = taper(0.128, 0.138, 0.092, 0.102, 0.42);
+      shinGeo.translate(0, -0.21, 0);
+      knee.add(segment([BS.Geo.paint(shinGeo, jeans)]));
+
+      var ankle = new THREE.Group();
+      ankle.position.set(0, -0.42, 0);
+      ankle.rotation.x = -0.10;   // keeps the sole level under the knee bend
+      var footGeo = BS.Geo.box(0.118, 0.082, 0.265, 0, -0.041, 0.058, shoe);
+      ankle.add(segment([footGeo]));
+      knee.add(ankle);
+
+      hip.add(knee);
+      hip.userData.knee = knee;
+      hip.userData.ankle = ankle;
+      return hip;
+    }
+    var legL = makeLeg(-1), legR = makeLeg(1);
     g.add(legL); g.add(legR);
 
-    var armL = new THREE.Group(), armR = new THREE.Group();
-    armL.position.set(-0.35, 1.46, 0);
-    armR.position.set(0.35, 1.46, 0);
-    var armLMesh = makeLimb(0.13, 0.58, 0.15, jacket); armLMesh.position.y = -0.29;
-    var armRMesh = makeLimb(0.13, 0.58, 0.15, jacket); armRMesh.position.y = -0.29;
-    armL.add(armLMesh); armR.add(armRMesh);
+    // ---- arms: shoulder → upper arm, elbow → forearm + hand ---------------
+    function makeArm(side) {
+      var sho = new THREE.Group();
+      sho.position.set(0.252 * side, 1.50, 0);
+      var upperGeo = taper(0.128, 0.132, 0.102, 0.106, 0.31);
+      upperGeo.translate(0, -0.155, 0);
+      sho.add(segment([BS.Geo.paint(upperGeo, jacket)]));
+
+      var elbow = new THREE.Group();
+      elbow.position.set(0, -0.31, 0);
+      var foreGeo = taper(0.102, 0.106, 0.077, 0.082, 0.28);
+      foreGeo.translate(0, -0.14, 0);
+      var handGeo = BS.Geo.box(0.078, 0.105, 0.062, 0, -0.335, 0.006, skin);
+      elbow.add(segment([BS.Geo.paint(foreGeo, jacket), handGeo]));
+      elbow.rotation.x = 0.12;
+      sho.add(elbow);
+      sho.userData.elbow = elbow;
+      return sho;
+    }
+    var armL = makeArm(-1), armR = makeArm(1);
     g.add(armL); g.add(armR);
 
     var gun = new THREE.Group();

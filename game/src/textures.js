@@ -521,21 +521,21 @@ window.BS = window.BS || {};
   }
 
   // ------------------------------------------------------- ground contact kit
-  // Soft dark ellipse: alpha carries the falloff, so it composites over any surface.
-  function contactShadow() {
-    return cached('contactShadow', function () {
+  // Blob shadow: the alpha channel carries the whole falloff so the decal
+  // composites over asphalt, kerbs and dirt alike. Stops are shaped so the
+  // darkest value sits under the body and the very last texel is 0, which is
+  // what keeps the footprint from reading as a hard-edged grey pool.
+  function blobShadow(key, stops, edgeRadius) {
+    return cached(key, function () {
       var c = makeCanvas(128, 128), b = c.getContext('2d');
       b.clearRect(0, 0, 128, 128);
-      var g = b.createRadialGradient(64, 64, 2, 64, 64, 63);
-      g.addColorStop(0.0, 'rgba(8,10,14,0.62)');
-      g.addColorStop(0.24, 'rgba(8,10,14,0.50)');
-      g.addColorStop(0.5, 'rgba(10,12,16,0.28)');
-      g.addColorStop(0.74, 'rgba(12,14,18,0.11)');
-      g.addColorStop(0.9, 'rgba(12,14,18,0.03)');
-      g.addColorStop(1.0, 'rgba(12,14,18,0)');
+      var g = b.createRadialGradient(64, 64, 0, 64, 64, 64);
+      for (var i = 0; i < stops.length; i++) {
+        g.addColorStop(stops[i][0], 'rgba(9,11,15,' + stops[i][1] + ')');
+      }
       b.fillStyle = g;
       b.beginPath();
-      b.ellipse(64, 64, 63, 63, 0, 0, Math.PI * 2);
+      b.ellipse(64, 64, edgeRadius, edgeRadius, 0, 0, Math.PI * 2);
       b.fill();
       var t = toTexture(c);
       t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
@@ -546,6 +546,22 @@ window.BS = window.BS || {};
       t.magFilter = THREE.LinearFilter;
       return t;
     });
+  }
+
+  // Broad soft footprint: near-flat in the middle, gone by the outline.
+  function contactShadow() {
+    return blobShadow('contactShadow', [
+      [0.00, 0.94], [0.20, 0.90], [0.38, 0.78], [0.54, 0.58],
+      [0.68, 0.37], [0.80, 0.19], [0.90, 0.07], [0.965, 0.012], [1.00, 0]
+    ], 63.6);
+  }
+
+  // Tight core directly under the chassis: darker, much smaller, still soft.
+  function contactCore() {
+    return blobShadow('contactCore', [
+      [0.00, 1.00], [0.34, 0.94], [0.58, 0.70], [0.76, 0.36],
+      [0.88, 0.13], [0.96, 0.02], [1.00, 0]
+    ], 63.6);
   }
 
   // Dark band where a facade meets the pavement.
@@ -701,6 +717,7 @@ window.BS = window.BS || {};
     wood: wood,
     roof: tileRoof,
     contactShadow: contactShadow,
+    contactCore: contactCore,
     baseAO: baseAO,
     skyGradient: skyGradient,
     billboard: billboard,

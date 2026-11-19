@@ -1,7 +1,10 @@
 /* Bahía Sol — pedestrians.
-   Fifty walkers share six instanced meshes (torso, head, two legs, two arms) so
-   the crowd costs a handful of draw calls. They loop their block, run from
-   gunfire, and six of them can be hired as warehouse rivals. */
+   Fifty walkers plus six hireable rivals. Every body is built from one shared
+   primitive kit (tapered torso prism, pelvis, head + hair cap, neck, thigh/shin/
+   foot, upper arm/forearm+hand) so a figure still reads as a human at 8–20 m:
+   shoulders wider than the waist, arms counter-swinging against the legs, knees
+   folding on the swing-through. Parts are instanced, per-instance colour only,
+   and every matrix is written into scratch objects — no per-frame allocation. */
 window.BS = window.BS || {};
 
 (function (BS) {
@@ -10,11 +13,136 @@ window.BS = window.BS || {};
   var CFG = BS.CFG;
   var STEP = CFG.world.step;
 
+  // 8 clothing colours, 6 trousers, plus per-person shoes, hair and skin.
   var SHIRTS = [0xd9d2c0, 0x35506b, 0xc0503f, 0x2f7d6d, 0xe0b23c, 0x8a5a86, 0x3b3f45, 0xd8e0e2];
-  var PANTS = [0x2b3038, 0x3f4a5a, 0x5a4a38, 0x1f242a, 0x6b6f74];
+  var PANTS = [0x2b3038, 0x3f4a5a, 0x5a4a38, 0x1f242a, 0x6b6f74, 0x46504a];
+  var SHOES = [0x17191c, 0x2c2622, 0x4a3b2a, 0x6d6f72, 0x101215];
+  var HAIR = [0x1a1512, 0x2e2118, 0x4b3322, 0x6b5033, 0x231f1d, 0x8a8078];
   var SKIN = [0xd8a878, 0xb87c4e, 0x8a5a36, 0xe8c39a, 0x6b4326];
 
+  // height scale, width scale — five distinct builds, none of them a box stack
+  var BUILDS = [
+    [1.06, 0.93],   // tall and slim
+    [0.94, 1.11],   // short and broad
+    [1.00, 1.00],   // average
+    [1.03, 1.09],   // tall and broad
+    [0.95, 0.91]    // short and slim
+  ];
+
+  // ---- skeleton reference points (metres, unscaled) ------------------------
+  var HIP_Y = 0.90;      // hip joint
+  var THIGH = 0.42;      // hip → knee
+  var SHIN = 0.40;       // knee → ankle
+  var SHOULDER_Y = 1.42;
+  var UPPER_ARM = 0.30;
+  var FORE_ARM = 0.26;
+  var TORSO_Y = 1.22;    // centre of the torso prism (waist 1.00 → shoulders 1.44)
+  var PELVIS_Y = 0.95;
+  var NECK_Y = 1.492;
+  var HEAD_Y = 1.632;
+
   var wallMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
+
+  var geoKit = null;
+
+  // A tapered rectangular prism: different width/depth at the top and bottom,
+  // flat shaded. Winding is resolved against the outward direction so no face
+  // can end up inside out.
+  function prism(wt, dt, wb, db, h) {
+    var hy = h * 0.5;
+    var v = [
+      [-wb / 2, -hy, -db / 2], [wb / 2, -hy, -db / 2], [wb / 2, -hy, db / 2], [-wb / 2, -hy, db / 2],
+      [-wt / 2, hy, -dt / 2], [wt / 2, hy, -dt / 2], [wt / 2, hy, dt / 2], [-wt / 2, hy, dt / 2]
+    ];
+    var faces = [[4, 5, 6, 7], [3, 2, 1, 0], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [3, 0, 4, 7]];
+    var pos = [], nor = [], uv = [];
+    for (var f = 0; f < faces.length; f++) {
+      var q = faces[f];
+      var a = v[q[0]], b = v[q[1]], c = v[q[2]], d = v[q[3]];
+      var ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+      var wx = c[0] - a[0], wy = c[1] - a[1], wz = c[2] - a[2];
+      var nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+      // face centroid points away from the prism centre; flip if it disagrees
+      var cx = (a[0] + b[0] + c[0] + d[0]) * 0.25;
+      var cy = (a[1] + b[1] + c[1] + d[1]) * 0.25;
+      var cz = (a[2] + b[2] + c[2] + d[2]) * 0.25;
+      if (nx * cx + ny * cy + nz * cz < 0) {
+        var t = b; b = d; d = t;
+        nx = -nx; ny = -ny; nz = -nz;
+      }
+      var len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+      nx /= len; ny /= len; nz /= len;
+      var tri = [a, b, c, a, c, d];
+      for (var k = 0; k < 6; k++) {
+        pos.push(tri[k][0], tri[k][1], tri[k][2]);
+        nor.push(nx, ny, nz);
+      }
+      uv.push(0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1);
+    }
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    return g;
+  }
+
+  // Built once, shared by every pedestrian.
+  function buildKit() {
+    if (geoKit) return geoKit;
+
+    // torso: shoulders clearly wider than the waist
+    var torso = prism(0.47, 0.225, 0.315, 0.180, 0.44);
+    // pelvis / hips
+    var pelvis = prism(0.335, 0.215, 0.300, 0.198, 0.20);
+    // head: low-segment sphere, slightly taller than wide
+    var head = new THREE.SphereGeometry(0.118, 8, 6);
+    head.scale(1, 1.12, 0.98);
+    // hair: a cap over the crown and the back of the skull
+    var hair = new THREE.SphereGeometry(0.127, 8, 5, 0, Math.PI * 2, 0, Math.PI * 0.56);
+    hair.translate(0, 0.004, -0.008);
+    var neck = new THREE.CylinderGeometry(0.050, 0.057, 0.10, 7);
+    // arms: joint at the top, hand merged into the forearm
+    var upperArm = prism(0.098, 0.098, 0.079, 0.083, UPPER_ARM);
+    upperArm.translate(0, -UPPER_ARM * 0.5, 0);
+    var foreArm = prism(0.079, 0.083, 0.058, 0.062, FORE_ARM);
+    foreArm.translate(0, -FORE_ARM * 0.5, 0);
+    var hand = new THREE.BoxGeometry(0.063, 0.098, 0.050);
+    hand.translate(0, -FORE_ARM - 0.035, 0.004);
+    var foreArmPlus = BS.Geo.merge([foreArm, hand]);
+    // legs: joint at the top, foot block pivoting at the ankle
+    var thigh = prism(0.147, 0.157, 0.109, 0.117, THIGH);
+    thigh.translate(0, -THIGH * 0.5, 0);
+    var shin = prism(0.109, 0.117, 0.079, 0.089, SHIN);
+    shin.translate(0, -SHIN * 0.5, 0);
+    var foot = new THREE.BoxGeometry(0.101, 0.075, 0.240);
+    foot.translate(0, -0.0375, 0.055);
+
+    geoKit = {
+      torso: torso, pelvis: pelvis, head: head, hair: hair, neck: neck,
+      upperArm: upperArm, foreArm: foreArmPlus,
+      thigh: thigh, shin: shin, foot: foot
+    };
+    return geoKit;
+  }
+
+  // scratch matrices, allocated once
+  var _base = new THREE.Matrix4(), _m = new THREE.Matrix4(), _t = new THREE.Matrix4();
+  var _v3 = new THREE.Vector3();
+  var _chain = [];
+  for (var ci = 0; ci < 12; ci++) _chain.push(new THREE.Matrix4());
+
+  function joint(out, parent, x, y, z, rx) {
+    out.makeRotationX(rx);
+    out.setPosition(x, y, z);
+    out.premultiply(parent);
+    return out;
+  }
+
+  function offset(out, chain, y) {
+    _t.makeTranslation(0, y, 0);
+    out.multiplyMatrices(chain, _t);
+    return out;
+  }
 
   function Pedestrians(scene, city, rng, opts) {
     opts = opts || {};
@@ -27,24 +155,35 @@ window.BS = window.BS || {};
     this.peds = [];
     this.phase = 0;
 
-    var box = new THREE.BoxGeometry(1, 1, 1);
-    var head = new THREE.SphereGeometry(0.5, 8, 6);
+    var kit = buildKit();
     var mat = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0.0 });
-    this.torsoMesh = new THREE.InstancedMesh(box, mat, this.total);
-    this.headMesh = new THREE.InstancedMesh(head, mat, this.total);
-    this.legLMesh = new THREE.InstancedMesh(box, mat, this.total);
-    this.legRMesh = new THREE.InstancedMesh(box, mat, this.total);
-    this.armLMesh = new THREE.InstancedMesh(box, mat, this.total);
-    this.armRMesh = new THREE.InstancedMesh(box, mat, this.total);
-    var meshes = [this.torsoMesh, this.headMesh, this.legLMesh, this.legRMesh, this.armLMesh, this.armRMesh];
-    for (var m = 0; m < meshes.length; m++) {
-      meshes[m].instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      meshes[m].castShadow = true;
-      meshes[m].receiveShadow = false;
-      meshes[m].frustumCulled = false;
-      scene.add(meshes[m]);
+    var defs = [
+      ['torso', 'torso'], ['pelvis', 'pelvis'], ['head', 'head'], ['hair', 'hair'],
+      ['neck', 'neck'],
+      ['thighL', 'thigh'], ['thighR', 'thigh'],
+      ['shinL', 'shin'], ['shinR', 'shin'],
+      ['footL', 'foot'], ['footR', 'foot'],
+      ['uarmL', 'upperArm'], ['uarmR', 'upperArm'],
+      ['farmL', 'foreArm'], ['farmR', 'foreArm']
+    ];
+    var meshes = [];
+    for (var d = 0; d < defs.length; d++) {
+      var im = new THREE.InstancedMesh(kit[defs[d][1]], mat, this.total);
+      im.name = defs[d][0];
+      im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      im.castShadow = true;
+      im.receiveShadow = false;
+      im.frustumCulled = false;
+      scene.add(im);
+      meshes.push(im);
+      this[defs[d][0] + 'Mesh'] = im;
     }
     this.meshes = meshes;
+    // legacy aliases used by older call sites
+    this.legLMesh = this.thighLMesh;
+    this.legRMesh = this.thighRMesh;
+    this.armLMesh = this.uarmLMesh;
+    this.armRMesh = this.uarmRMesh;
 
     for (var i = 0; i < this.total; i++) {
       var isRival = i >= this.walkers;
@@ -64,25 +203,39 @@ window.BS = window.BS || {};
         lineZ: 0,
         shootTimer: rng.float(0.8, 2.4),
         deadTimer: 0,
-        hurt: 0
+        hurt: 0,
+        lift: 0,
+        hScale: 1, wScale: 1
       };
+      var build = BUILDS[i % BUILDS.length];
+      ped.hScale = build[0];
+      ped.wScale = build[1];
+      ped.shirt = rng.pick(SHIRTS);
+      ped.pants = rng.pick(PANTS);
+      ped.shoes = rng.pick(SHOES);
+      ped.hair = rng.pick(HAIR);
+      ped.skin = rng.pick(SKIN);
       this.peds.push(ped);
-      // colour the six parts for this slot
-      this.torsoMesh.setColorAt(i, new THREE.Color(rng.pick(SHIRTS)));
-      this.headMesh.setColorAt(i, new THREE.Color(rng.pick(SKIN)));
-      this.legLMesh.setColorAt(i, new THREE.Color(rng.pick(PANTS)));
-      this.legRMesh.setColorAt(i, new THREE.Color(rng.pick(PANTS)));
-      this.armLMesh.setColorAt(i, new THREE.Color(rng.pick(SKIN)));
-      this.armRMesh.setColorAt(i, new THREE.Color(rng.pick(SKIN)));
+
+      this.torsoMesh.setColorAt(i, new THREE.Color(ped.shirt));
+      this.pelvisMesh.setColorAt(i, new THREE.Color(ped.pants));
+      this.headMesh.setColorAt(i, new THREE.Color(ped.skin));
+      this.hairMesh.setColorAt(i, new THREE.Color(ped.hair));
+      this.neckMesh.setColorAt(i, new THREE.Color(ped.skin));
+      this.thighLMesh.setColorAt(i, new THREE.Color(ped.pants));
+      this.thighRMesh.setColorAt(i, new THREE.Color(ped.pants));
+      this.shinLMesh.setColorAt(i, new THREE.Color(ped.pants));
+      this.shinRMesh.setColorAt(i, new THREE.Color(ped.pants));
+      this.footLMesh.setColorAt(i, new THREE.Color(ped.shoes));
+      this.footRMesh.setColorAt(i, new THREE.Color(ped.shoes));
+      this.uarmLMesh.setColorAt(i, new THREE.Color(ped.shirt));
+      this.uarmRMesh.setColorAt(i, new THREE.Color(ped.shirt));
+      this.farmLMesh.setColorAt(i, new THREE.Color(ped.skin));
+      this.farmRMesh.setColorAt(i, new THREE.Color(ped.skin));
       this.writeMatrices(ped, wallMatrix);
     }
-    if (this.torsoMesh.instanceColor) {
-      this.torsoMesh.instanceColor.needsUpdate = true;
-      this.headMesh.instanceColor.needsUpdate = true;
-      this.legLMesh.instanceColor.needsUpdate = true;
-      this.legRMesh.instanceColor.needsUpdate = true;
-      this.armLMesh.instanceColor.needsUpdate = true;
-      this.armRMesh.instanceColor.needsUpdate = true;
+    for (var q = 0; q < meshes.length; q++) {
+      if (meshes[q].instanceColor) meshes[q].instanceColor.needsUpdate = true;
     }
 
     this.spawnWalkers();
@@ -239,46 +392,89 @@ window.BS = window.BS || {};
     return false;
   };
 
+  // Full body pose: one base matrix per person, then a joint chain down each
+  // limb. Arms counter-swing the legs, knees fold on the swing-through and the
+  // foot lifts, which is what drives the shadow dimming.
   Pedestrians.prototype.writeMatrices = function (ped, blank) {
     var i = ped.index;
-    var tmp = new THREE.Matrix4();
-    var base = new THREE.Matrix4();
+    var m = this.meshes;
+    var k;
+
     if (blank) {
-      for (var k = 0; k < 6; k++) this.meshes[k].setMatrixAt(i, blank);
+      for (k = 0; k < m.length; k++) m[k].setMatrixAt(i, blank);
+      ped.lift = 0;
       return;
     }
-    base.makeRotationY(ped.heading);
-    base.setPosition(ped.x, 0, ped.z);
 
-    function limb(mesh, px, py, pz, rx, sx, sy, sz, pivot) {
-      var m = new THREE.Matrix4().makeTranslation(px, py, pz);
-      m.multiply(new THREE.Matrix4().makeRotationX(rx));
-      m.multiply(new THREE.Matrix4().makeTranslation(0, -pivot, 0));
-      m.multiply(new THREE.Matrix4().makeScale(sx, sy, sz));
-      m.premultiply(base);
-      mesh.setMatrixAt(i, m);
-    }
+    var amp = ped.speed > 3 ? 0.80 : (ped.speed > 0.55 ? 0.52 : 0.06);
+    var ph = ped.phase;
+    var s = Math.sin(ph);
+    var bob = -Math.abs(Math.cos(ph)) * 0.014 * (amp / 0.52);
 
-    var sw = ped.speed > 3 ? 0.85 : 0.55;
-    var swing = Math.sin(ped.phase) * sw;
-    var swing2 = Math.sin(ped.phase + Math.PI) * sw;
+    _v3.set(ped.wScale, ped.hScale, ped.wScale);
+    _base.makeRotationY(ped.heading);
+    _base.scale(_v3);
+    _base.setPosition(ped.x, bob, ped.z);
 
-    tmp.makeTranslation(0, 1.18 - Math.abs(Math.sin(ped.phase)) * 0.02, 0);
-    tmp.multiply(new THREE.Matrix4().makeScale(0.52, 0.62, 0.3));
-    tmp.premultiply(base);
-    this.torsoMesh.setMatrixAt(i, tmp);
+    // torso / pelvis / head
+    _m.makeTranslation(0, TORSO_Y, 0); _m.premultiply(_base);
+    this.torsoMesh.setMatrixAt(i, _m);
 
-    var headM = new THREE.Matrix4().makeTranslation(0, 1.66, 0)
-      .multiply(new THREE.Matrix4().makeScale(0.27, 0.3, 0.27));
-    headM.premultiply(base);
-    this.headMesh.setMatrixAt(i, headM);
+    _m.makeTranslation(0, PELVIS_Y, 0); _m.premultiply(_base);
+    this.pelvisMesh.setMatrixAt(i, _m);
 
-    limb(this.legLMesh, -0.14, 0.92, 0, swing, 0.17, 0.82, 0.2, 0.41);
-    limb(this.legRMesh, 0.14, 0.92, 0, swing2, 0.17, 0.82, 0.2, 0.41);
-    limb(this.armLMesh, -0.34, 1.46, 0, swing2 * 0.9, 0.12, 0.58, 0.14, 0.29);
-    limb(this.armRMesh, 0.34, 1.46, 0, swing * 0.9, 0.12, 0.58, 0.14, 0.29);
+    _m.makeTranslation(0, NECK_Y, 0); _m.premultiply(_base);
+    this.neckMesh.setMatrixAt(i, _m);
 
-    for (var q = 0; q < 6; q++) this.meshes[q].instanceMatrix.needsUpdate = true;
+    _m.makeTranslation(0, HEAD_Y, 0); _m.premultiply(_base);
+    this.headMesh.setMatrixAt(i, _m);
+
+    _m.makeTranslation(0, HEAD_Y, 0); _m.premultiply(_base);
+    this.hairMesh.setMatrixAt(i, _m);
+
+    // ---- legs -------------------------------------------------------------
+    var hipL = Math.sin(ph) * amp;
+    var hipR = Math.sin(ph + Math.PI) * amp;
+    var kneeL = 0.10 + 1.02 * Math.max(0, Math.cos(ph)) * (amp / 0.52);
+    var kneeR = 0.10 + 1.02 * Math.max(0, Math.cos(ph + Math.PI)) * (amp / 0.52);
+    // keep the foot near level, toes dipping only slightly
+    var ankL = -(hipL + kneeL) * 0.55 + 0.06;
+    var ankR = -(hipR + kneeR) * 0.55 + 0.06;
+
+    joint(_chain[0], _base, -0.098, HIP_Y, 0, hipL);
+    offset(_m, _chain[0], -THIGH * 0.5); this.thighLMesh.setMatrixAt(i, _m);
+    joint(_chain[1], _chain[0], 0, -THIGH, 0, kneeL);
+    offset(_m, _chain[1], -SHIN * 0.5); this.shinLMesh.setMatrixAt(i, _m);
+    joint(_chain[2], _chain[1], 0, -SHIN, 0, ankL);
+    this.footLMesh.setMatrixAt(i, _chain[2]);
+
+    joint(_chain[3], _base, 0.098, HIP_Y, 0, hipR);
+    offset(_m, _chain[3], -THIGH * 0.5); this.thighRMesh.setMatrixAt(i, _m);
+    joint(_chain[4], _chain[3], 0, -THIGH, 0, kneeR);
+    offset(_m, _chain[4], -SHIN * 0.5); this.shinRMesh.setMatrixAt(i, _m);
+    joint(_chain[5], _chain[4], 0, -SHIN, 0, ankR);
+    this.footRMesh.setMatrixAt(i, _chain[5]);
+
+    // ---- arms: opposite phase to the same-side leg ------------------------
+    var armL = -hipL * 0.66;
+    var armR = -hipR * 0.66;
+    var elbL = 0.20 + 0.34 * Math.max(0, Math.sin(ph + 1.4)) * (amp / 0.52);
+    var elbR = 0.20 + 0.34 * Math.max(0, Math.sin(ph + Math.PI + 1.4)) * (amp / 0.52);
+
+    joint(_chain[6], _base, -0.238, SHOULDER_Y, 0, armL);
+    offset(_m, _chain[6], -UPPER_ARM * 0.5); this.uarmLMesh.setMatrixAt(i, _m);
+    joint(_chain[7], _chain[6], 0, -UPPER_ARM, 0, elbL);
+    this.farmLMesh.setMatrixAt(i, _chain[7]);
+
+    joint(_chain[8], _base, 0.238, SHOULDER_Y, 0, armR);
+    offset(_m, _chain[8], -UPPER_ARM * 0.5); this.uarmRMesh.setMatrixAt(i, _m);
+    joint(_chain[9], _chain[8], 0, -UPPER_ARM, 0, elbR);
+    this.farmRMesh.setMatrixAt(i, _chain[9]);
+
+    // 0…1 weight for the ground blob: both feet planted → 1
+    ped.lift = Math.max(0, Math.min(1, Math.max(kneeL, kneeR) - 0.10));
+
+    for (k = 0; k < m.length; k++) m[k].instanceMatrix.needsUpdate = true;
   };
 
   Pedestrians.prototype.update = function (dt, game) {

@@ -21,50 +21,134 @@ window.BS = window.BS || {};
     return G.paint(g, color);
   }
 
+  function shade(hex, k) {
+    return new THREE.Color(hex).multiplyScalar(k).getHex();
+  }
+
+  // Cubic tube along Z — used for exhaust tips.
+  function pipe(x, y, z, r, len, color) {
+    var g = new THREE.CylinderGeometry(r, r, len, 8);
+    g.rotateX(Math.PI / 2);
+    g.translate(x, y, z);
+    return G.paint(g, color);
+  }
+
+  // Roof height per body style, so light bars and taxi signs sit on the roof
+  // instead of floating above it.
+  function roofY(spec, kind) {
+    var H = spec.height;
+    var bodyH = kind === 'van' ? H * 0.72 : H * 0.42;
+    var belt = 0.4 + bodyH;
+    if (kind === 'van') return belt + H * 0.3;
+    if (kind === 'pickup') return belt + H * 0.33;
+    if (kind === 'sport') return belt + H * 0.30;
+    if (kind === 'muscle') return belt + H * 0.31;
+    return belt + H * 0.34;
+  }
+
   function bodyGeometry(spec, paint, kind) {
     var L = spec.length, Wd = spec.width, H = spec.height;
     var parts = [];
     // the shell rides high enough that the tyres read from any angle
     var y0 = 0.4;
     var bodyH = H * 0.42;
+    var beltY = y0 + bodyH;
     var paintC = paint;
-    var GLASS_LO = 0x1a242d;   // shadowed lower glass
-    var GLASS_HI = 0x577486;   // sky-facing upper glass
+    var GLASS_LO = 0x6d8b9c;   // shadowed lower glass
+    var GLASS_HI = 0x9dbecd;   // sky-facing upper glass
     var TRIM = 0x181b1f;
+    var CHROME = 0xb9c2c8;
 
-    // dark arch recess cut into the flank, with a lip over it
-    function archRecess(zPos) {
+    // ---- flat plates with automatic outward winding ----------------------
+    function quad(list, a, b, c, d, color, hint, off) {
+      var ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+      var wx = c[0] - a[0], wy = c[1] - a[1], wz = c[2] - a[2];
+      var nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+      var len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+      nx /= len; ny /= len; nz /= len;
+      if (nx * hint[0] + ny * hint[1] + nz * hint[2] < 0) {
+        var t = b; b = d; d = t;
+        nx = -nx; ny = -ny; nz = -nz;
+      }
+      var o = off || 0;
+      var pts = [a, b, c, a, c, d];
+      var pos = [], nor = [];
+      for (var i = 0; i < 6; i++) {
+        pos.push(pts[i][0] + nx * o, pts[i][1] + ny * o, pts[i][2] + nz * o);
+        nor.push(nx, ny, nz);
+      }
+      var g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1], 2));
+      list.push(G.paint(g, color));
+    }
+
+    function shrinkQuad(a, b, c, d, f) {
+      var cx = (a[0] + b[0] + c[0] + d[0]) * 0.25;
+      var cy = (a[1] + b[1] + c[1] + d[1]) * 0.25;
+      var cz = (a[2] + b[2] + c[2] + d[2]) * 0.25;
+      function s(p) {
+        return [cx + (p[0] - cx) * f, cy + (p[1] - cy) * f, cz + (p[2] - cz) * f];
+      }
+      return [s(a), s(b), s(c), s(d)];
+    }
+
+    // dark arch recess behind the wheel, plus a flare swept over the tyre
+    function archRecess(zPos, flareColor) {
       for (var s = -1; s <= 1; s += 2) {
-        parts.push(G.box(0.05, 0.66, 1.08, s * (Wd / 2 - 0.012), y0 + 0.1, zPos, 0x0b0d10));
-        parts.push(G.box(0.1, 0.09, 1.2, s * (Wd / 2 - 0.035), y0 + 0.46, zPos, paintC));
+        // shadowed wheel well: an arc, not a slab, so the flank stays intact
+        var well = new THREE.RingGeometry(0.33, 0.50, 10, 1, -0.32, Math.PI + 0.64);
+        well.rotateY(s > 0 ? Math.PI / 2 : -Math.PI / 2);
+        well.translate(s * (Wd / 2 - 0.004), y0, zPos);
+        parts.push(G.paint(well, 0x0b0d10));
+        var flare = new THREE.TorusGeometry(0.47, 0.058, 5, 9, Math.PI);
+        flare.rotateY(Math.PI / 2);
+        flare.translate(s * (Wd / 2 - 0.004), y0, zPos);
+        parts.push(G.paint(flare, flareColor || paintC));
       }
     }
 
-    // greenhouse: dark core, paint pillars, inset glass, raked screens
-    function shell(cabH, cabL, cabZ) {
-      var cy = y0 + bodyH + cabH / 2;
-      parts.push(G.box(Wd * 0.85, cabH, cabL, 0, cy, cabZ, GLASS_LO));
-      for (var s = -1; s <= 1; s += 2) {
-        parts.push(G.box(0.02, cabH * 0.5, cabL * 0.8, s * Wd * 0.428,
-          y0 + bodyH + cabH * 0.6, cabZ, GLASS_HI));
-        parts.push(G.box(0.06, cabH * 0.9, 0.08, s * Wd * 0.432,
-          y0 + bodyH + cabH * 0.5, cabZ, TRIM));           // B pillar
-        parts.push(G.box(0.07, 0.05, cabL * 0.9, s * Wd * 0.432,
-          y0 + bodyH + cabH + 0.02, cabZ, paintC));        // roof rail
+    // Greenhouse: roof narrower than the waist, screens raked back, glass set
+    // into a painted shell so the pillars read as body colour.
+    function greenhouse(cabH, cabL, cabZ, rakeF, rakeR) {
+      var hw0 = Wd * 0.462;      // waist
+      var hw1 = Wd * 0.352;      // roof
+      var zF0 = cabZ + cabL * 0.5, zB0 = cabZ - cabL * 0.5;
+      var zF1 = zF0 - rakeF, zB1 = zB0 + rakeR;
+      var yB = beltY, yT = beltY + cabH;
+
+      var front = [[-hw0, yB, zF0], [hw0, yB, zF0], [hw1, yT, zF1], [-hw1, yT, zF1]];
+      var back = [[-hw0, yB, zB0], [hw0, yB, zB0], [hw1, yT, zB1], [-hw1, yT, zB1]];
+      var sideL = [[-hw0, yB, zB0], [-hw0, yB, zF0], [-hw1, yT, zF1], [-hw1, yT, zB1]];
+      var sideR = [[hw0, yB, zB0], [hw0, yB, zF0], [hw1, yT, zF1], [hw1, yT, zB1]];
+      var roof = [[-hw1, yT, zB1], [hw1, yT, zB1], [hw1, yT, zF1], [-hw1, yT, zF1]];
+      var faces = [
+        [front, [0, 0.35, 1], GLASS_HI],
+        [back, [0, 0.35, -1], GLASS_LO],
+        [sideL, [-1, 0, 0], GLASS_HI],
+        [sideR, [1, 0, 0], GLASS_HI],
+        [roof, [0, 1, 0], 0]
+      ];
+      for (var f = 0; f < faces.length; f++) {
+        var q = faces[f][0];
+        quad(parts, q[0], q[1], q[2], q[3], paintC, faces[f][1]);
       }
-      for (var q = -1; q <= 1; q += 2) {
-        for (var s2 = -1; s2 <= 1; s2 += 2) {
-          parts.push(G.box(0.085, cabH, 0.09, s2 * Wd * 0.415,
-            cy, cabZ + q * cabL * 0.46, paintC));          // A / C pillars
-        }
+      // glazing sits a hair proud of the shell, inset on every edge
+      for (var g2 = 0; g2 < 4; g2++) {
+        var qq = faces[g2][0];
+        var sg = shrinkQuad(qq[0], qq[1], qq[2], qq[3], g2 === 3 ? 0.86 : 0.9);
+        quad(parts, sg[0], sg[1], sg[2], sg[3], faces[g2][2], faces[g2][1], 0.012);
       }
-      parts.push(G.box(Wd * 0.86, 0.09, cabL * 0.97, 0, y0 + bodyH + cabH + 0.03, cabZ, paintC));
-      parts.push(G.box(Wd * 0.9, 0.03, cabL * 1.04, 0, y0 + bodyH + 0.015, cabZ, 0xcfd6da));
-      parts.push(wedge(Wd * 0.84, 0.05, cabH * 1.2, cabZ + cabL * 0.47,
-        y0 + bodyH + cabH * 0.52, -0.46, GLASS_HI));
-      parts.push(wedge(Wd * 0.84, 0.05, cabH * 1.05, cabZ - cabL * 0.47,
-        y0 + bodyH + cabH * 0.52, 0.46, GLASS_LO));
+      // cabin interior: one low block of seats, kept short and low so the raked
+      // screens and the tapered roof can never be pierced by it
+      parts.push(G.box(Wd * 0.58, cabH * 0.46, cabL * 0.5, 0, yB + cabH * 0.24, cabZ, 0x2b3138));
+      // chrome sill along the base of the glass
+      parts.push(G.box(Wd * 0.94, 0.022, cabL * 0.9, 0, yB + 0.012, cabZ, CHROME));
+      return yT;
     }
+
+    var cabH, cabL, cabZ;
 
     if (kind === 'van') {
       parts.push(G.box(Wd, H * 0.72, L, 0, y0 + H * 0.36, 0, paintC));
@@ -72,6 +156,7 @@ window.BS = window.BS || {};
       parts.push(G.box(Wd * 0.88, H * 0.44, L * 0.6, 0, y0 + H * 0.8, -L * 0.16, paintC));
       for (var vs = -1; vs <= 1; vs += 2) {
         parts.push(G.box(0.02, 0.4, L * 0.46, vs * Wd * 0.442, y0 + H * 0.64, -L * 0.06, GLASS_HI));
+        parts.push(G.box(0.05, 0.06, L * 0.5, vs * Wd * 0.45, y0 + H * 0.5, -L * 0.06, paintC));
       }
       parts.push(wedge(Wd * 0.82, 0.05, H * 0.4, L * 0.5, y0 + H * 0.66, -0.3, GLASS_HI));
       parts.push(G.box(Wd * 0.9, 0.05, L * 0.62, 0, y0 + H * 1.02, -L * 0.16, 0xd8dcde));
@@ -81,7 +166,8 @@ window.BS = window.BS || {};
       // raised hood step in front of the screen
       parts.push(G.box(Wd * 0.97, bodyH * 0.42, L * 0.34, 0, y0 + bodyH * 0.8, L * 0.31, paintC));
       parts.push(G.box(Wd * 0.99, 0.03, L * 0.3, 0, y0 + bodyH * 0.99, L * 0.31, paintC));
-      shell(H * 0.33, L * 0.3, -L * 0.02);
+      cabH = H * 0.33; cabL = L * 0.3; cabZ = -L * 0.02;
+      greenhouse(cabH, cabL, cabZ, 0.30, 0.14);
       // open bed with side walls and a tailgate
       parts.push(G.box(Wd * 0.98, 0.06, L * 0.42, 0, y0 + bodyH * 0.98, -L * 0.32, 0x2a2e33));
       for (var bs = -1; bs <= 1; bs += 2) {
@@ -92,44 +178,76 @@ window.BS = window.BS || {};
     } else if (kind === 'sport') {
       parts.push(G.box(Wd, bodyH * 0.78, L, 0, y0 + bodyH * 0.39, 0, paintC));
       parts.push(G.box(Wd * 0.94, bodyH * 0.36, L * 0.36, 0, y0 + bodyH * 0.72, L * 0.3, paintC));
-      shell(H * 0.3, L * 0.38, -L * 0.08);
+      cabH = H * 0.30; cabL = L * 0.38; cabZ = -L * 0.08;
+      greenhouse(cabH, cabL, cabZ, 0.44, 0.40);
       parts.push(G.box(Wd * 0.72, 0.05, L * 0.16, 0, y0 + bodyH * 0.86, -L * 0.4, TRIM));
       archRecess(L * 0.32); archRecess(-L * 0.32);
     } else {
       // sedan / muscle / cruiser
       parts.push(G.box(Wd, bodyH, L, 0, y0 + bodyH / 2, 0, paintC));
-      // hood and boot step down a touch from the beltline
-      parts.push(G.box(Wd * 0.97, bodyH * 0.4, L * 0.32, 0, y0 + bodyH * 0.8, L * 0.33, paintC));
-      parts.push(G.box(Wd * 0.99, 0.028, L * 0.28, 0, y0 + bodyH * 1.0, L * 0.33, paintC));
-      parts.push(G.box(Wd * 0.97, bodyH * 0.4, L * 0.22, 0, y0 + bodyH * 0.8, -L * 0.38, paintC));
-      parts.push(G.box(Wd * 0.99, 0.028, L * 0.19, 0, y0 + bodyH * 1.0, -L * 0.38, paintC));
-      // shut line under the screen and a waist crease down the flank
-      parts.push(G.box(Wd * 0.9, 0.02, 0.05, 0, y0 + bodyH * 1.005, L * 0.16, TRIM));
-      for (var cs = -1; cs <= 1; cs += 2) {
-        parts.push(G.box(0.03, 0.03, L * 0.6, cs * Wd * 0.492, y0 + bodyH * 0.62, 0, TRIM));
-      }
-      var cabH = H * 0.34;
-      var cabL = L * (kind === 'muscle' ? 0.34 : 0.4);
-      var cabZ = kind === 'muscle' ? -L * 0.06 : -L * 0.03;
-      shell(cabH, cabL, cabZ);
       if (kind === 'muscle') {
-        parts.push(G.box(0.1, 0.15, 0.09, Wd * 0.3, y0 + bodyH * 0.78, -L * 0.46, TRIM));
-        parts.push(G.box(0.1, 0.15, 0.09, -Wd * 0.3, y0 + bodyH * 0.78, -L * 0.46, TRIM));
-        parts.push(G.box(Wd * 0.74, 0.055, 0.32, 0, y0 + bodyH * 0.98, -L * 0.46, paintC));
+        // long bonnet, short deck, ducktail
+        parts.push(G.box(Wd * 0.985, bodyH * 0.42, L * 0.4, 0, y0 + bodyH * 0.8, L * 0.29, paintC));
+        parts.push(G.box(Wd * 0.995, 0.03, L * 0.36, 0, y0 + bodyH * 1.0, L * 0.29, paintC));
+        parts.push(G.box(Wd * 0.4, 0.05, L * 0.3, 0, y0 + bodyH * 1.02, L * 0.3, shade(paintC, 0.82)));
+        parts.push(G.box(Wd * 0.97, bodyH * 0.36, L * 0.18, 0, y0 + bodyH * 0.82, -L * 0.4, paintC));
+        parts.push(G.box(Wd * 0.76, 0.06, 0.34, 0, y0 + bodyH * 0.99, -L * 0.45, paintC));
+        cabH = H * 0.31; cabL = L * 0.34; cabZ = -L * 0.06;
+        greenhouse(cabH, cabL, cabZ, 0.44, 0.42);
+      } else {
+        parts.push(G.box(Wd * 0.97, bodyH * 0.4, L * 0.32, 0, y0 + bodyH * 0.8, L * 0.33, paintC));
+        parts.push(G.box(Wd * 0.99, 0.028, L * 0.28, 0, y0 + bodyH * 1.0, L * 0.33, paintC));
+        parts.push(G.box(Wd * 0.97, bodyH * 0.4, L * 0.22, 0, y0 + bodyH * 0.8, -L * 0.38, paintC));
+        parts.push(G.box(Wd * 0.99, 0.028, L * 0.19, 0, y0 + bodyH * 1.0, -L * 0.38, paintC));
+        cabH = H * 0.34; cabL = L * 0.40; cabZ = -L * 0.03;
+        greenhouse(cabH, cabL, cabZ, 0.42, 0.34);
       }
+      // shut line under the screen
+      parts.push(G.box(Wd * 0.9, 0.02, 0.05, 0, y0 + bodyH * 1.005, L * 0.16, TRIM));
       archRecess(L * 0.32); archRecess(-L * 0.32);
     }
 
-    // bumpers, skirts, mirrors
+    // ---- beltline crease: one thin, slightly proud line down each flank ----
+    for (var cs = -1; cs <= 1; cs += 2) {
+      parts.push(G.box(0.035, 0.032, L * 0.58, cs * (Wd / 2 - 0.002), beltY - 0.055, 0, shade(paintC, 0.62)));
+      parts.push(G.box(0.028, 0.028, L * 0.5, cs * (Wd / 2 - 0.004), y0 + bodyH * 0.22, 0, shade(paintC, 0.7)));
+    }
+
+    // ---- face: grille, bumpers, valance, exhaust tips ---------------------
+    var nosY = y0 + bodyH * 0.34;
+    parts.push(G.box(Wd * 0.58, 0.21, 0.05, 0, nosY, L / 2 - 0.005, 0x22262b));   // surround
+    parts.push(G.box(Wd * 0.52, 0.15, 0.06, 0, nosY, L / 2 + 0.012, TRIM));       // mesh
+    parts.push(G.box(Wd * 0.5, 0.022, 0.07, 0, nosY + 0.05, L / 2 + 0.02, CHROME));
+    parts.push(G.box(Wd * 0.5, 0.022, 0.07, 0, nosY - 0.05, L / 2 + 0.02, CHROME));
+    parts.push(G.box(Wd * 0.18, 0.1, 0.05, 0, nosY - 0.02, L / 2 + 0.03, 0xc9a227));  // badge
+
     parts.push(G.box(Wd * 1.01, 0.18, 0.24, 0, y0 + 0.12, L / 2 - 0.02, BUMPER));
     parts.push(G.box(Wd * 1.01, 0.18, 0.24, 0, y0 + 0.12, -L / 2 + 0.02, BUMPER));
-    parts.push(G.box(0.16, 0.1, 0.3, Wd / 2 + 0.02, y0 + bodyH + 0.14, L * 0.1, paintC));
-    parts.push(G.box(0.16, 0.1, 0.3, -Wd / 2 - 0.02, y0 + bodyH + 0.14, L * 0.1, paintC));
-    // side skirts
-    parts.push(G.box(0.1, 0.12, L * 0.62, Wd / 2, y0 - 0.02, 0, BUMPER));
-    parts.push(G.box(0.1, 0.12, L * 0.62, -Wd / 2, y0 - 0.02, 0, BUMPER));
+    parts.push(G.box(Wd * 0.96, 0.05, 0.3, 0, y0 - 0.02, L / 2 - 0.08, TRIM));   // front valance
+    // rear valance the exhaust tips actually emerge from
+    parts.push(G.box(Wd * 0.95, 0.17, 0.28, 0, y0 - 0.10, -L / 2 + 0.11, TRIM));
+    parts.push(G.box(Wd * 1.02, 0.042, 0.05, 0, y0 + 0.21, L / 2 + 0.03, CHROME));
+    parts.push(G.box(Wd * 1.02, 0.042, 0.05, 0, y0 + 0.21, -L / 2 - 0.03, CHROME));
+
+    if (kind === 'muscle') {
+      parts.push(pipe(Wd * 0.34, y0 - 0.06, -L / 2 - 0.08, 0.062, 0.2, CHROME));
+      parts.push(pipe(-Wd * 0.34, y0 - 0.06, -L / 2 - 0.08, 0.062, 0.2, CHROME));
+      parts.push(pipe(Wd * 0.22, y0 - 0.06, -L / 2 - 0.08, 0.062, 0.2, CHROME));
+      parts.push(pipe(-Wd * 0.22, y0 - 0.06, -L / 2 - 0.08, 0.062, 0.2, CHROME));
+    } else if (kind !== 'van') {
+      parts.push(pipe(Wd * 0.28, y0 - 0.06, -L / 2 - 0.08, 0.062, 0.2, CHROME));
+      parts.push(pipe(-Wd * 0.28, y0 - 0.06, -L / 2 - 0.08, 0.062, 0.2, CHROME));
+    }
+
+    // mirrors and side skirts
+    parts.push(G.box(0.16, 0.1, 0.3, Wd / 2 + 0.02, beltY + 0.02, L * 0.1, paintC));
+    parts.push(G.box(0.16, 0.1, 0.3, -Wd / 2 - 0.02, beltY + 0.02, L * 0.1, paintC));
+    parts.push(G.box(0.1, 0.12, L * 0.5, Wd / 2, y0 - 0.02, 0, BUMPER));
+    parts.push(G.box(0.1, 0.12, L * 0.5, -Wd / 2, y0 - 0.02, 0, BUMPER));
+
     return G.merge(parts);
   }
+
 
   var WHEEL_RADIUS = 0.4;
 
@@ -192,7 +310,7 @@ window.BS = window.BS || {};
     var wg = wheelGeometry();
     var wheelMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.72, metalness: 0.25 });
     var wheels = [];
-    var wx = spec.width / 2 - 0.02, wz = spec.length * 0.32;
+    var wx = spec.width / 2 - 0.11, wz = spec.length * 0.32;
     var spots = [[wx, wz], [-wx, wz], [wx, -wz], [-wx, -wz]];
     for (var i = 0; i < 4; i++) {
       var wheel = new THREE.Mesh(wg, wheelMat);
@@ -221,28 +339,31 @@ window.BS = window.BS || {};
 
     var lightBar = null;
     if (kind === 'cruiser') {
-      var barGeo = new THREE.BoxGeometry(1.5, 0.16, 0.32);
+      // sits on the flat part of the roof, not over the raked rear screen
+      var barY = roofY(spec, kind) + 0.09;
+      var barZ = -spec.length * 0.03 + spec.length * 0.40 * 0.12;
       var redMat = new THREE.MeshBasicMaterial({ color: 0xff2a24, toneMapped: false });
       var blueMat = new THREE.MeshBasicMaterial({ color: 0x2e7bff, toneMapped: false });
       var red = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.18, 0.3), redMat);
       var blue = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.18, 0.3), blueMat);
-      red.position.set(-0.38, 0.36 + spec.height * 0.95 + 0.1, -0.2);
-      blue.position.set(0.38, 0.36 + spec.height * 0.95 + 0.1, -0.2);
+      red.position.set(-0.38, barY, barZ);
+      blue.position.set(0.38, barY, barZ);
       group.add(red); group.add(blue);
       lightBar = { red: redMat, blue: blueMat, redMesh: red, blueMesh: blue, phase: 0 };
     }
 
     // black door panels for cruisers
     if (kind === 'cruiser') {
-      var decal = new THREE.Mesh(new THREE.BoxGeometry(spec.width + 0.02, 0.6, spec.length * 0.4),
+      var decalH = spec.height * 0.42 * 0.82;
+      var decal = new THREE.Mesh(new THREE.BoxGeometry(spec.width + 0.02, decalH, spec.length * 0.4),
         new THREE.MeshStandardMaterial({ color: 0x15181c, roughness: 0.6 }));
-      decal.position.set(0, 0.8, 0);
+      decal.position.set(0, 0.4 + spec.height * 0.42 * 0.55, 0);
       group.add(decal);
     }
     if (opts.taxi) {
-      var sign = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.28, 0.36),
+      var sign = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.26, 0.36),
         new THREE.MeshBasicMaterial({ color: 0xffd76a, toneMapped: false }));
-      sign.position.set(0, 0.36 + spec.height + 0.18, -0.1);
+      sign.position.set(0, roofY(spec, kind) + 0.19, -0.1);
       group.add(sign);
     }
 
