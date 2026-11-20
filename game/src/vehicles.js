@@ -257,7 +257,7 @@ window.BS = window.BS || {};
     tyre.rotateZ(Math.PI / 2);
     var rim = new THREE.CylinderGeometry(0.18, 0.18, 0.345, 10);
     rim.rotateZ(Math.PI / 2);
-    return G.merge([G.paint(tyre, WHEEL_COLOR), G.paint(rim, 0xc2c8ce)]);
+    return G.merge([G.paint(tyre, WHEEL_COLOR), G.paint(rim, 0x9aa1a8)]);
   }
 
   function lampGeometry(spec, police) {

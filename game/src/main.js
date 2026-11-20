@@ -32,6 +32,10 @@ window.BS = window.BS || {};
   BS.Fx.init(scene);
   var city = BS.City.build(scene, { seed: 7411 });
   BS.Shadows.init(scene);
+  if (BS.Env) {
+    BS.Env.init(renderer);
+    BS.Env.apply(scene, 'golden');
+  }
 
   var game = {
     scene: scene,

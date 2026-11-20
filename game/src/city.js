@@ -111,6 +111,7 @@ window.BS = window.BS || {};
     industrial: { id: 'industrial', name: 'Puerto Norte' },
     downtown: { id: 'downtown', name: 'Centro' },
     norte: { id: 'norte', name: 'Vista Norte' },
+    barrio: { id: 'barrio', name: 'Barrio Alto' },
     costa: { id: 'costa', name: 'Costa Este' }
   };
 
@@ -119,6 +120,7 @@ window.BS = window.BS || {};
     if (z > 470) return DISTRICTS.beach;
     if (x > 240 && z < -140) return DISTRICTS.industrial;
     if (Math.abs(x) < 260 && Math.abs(z) < 260) return DISTRICTS.downtown;
+    if (z < -350 && x > -320 && x < 60) return DISTRICTS.barrio;
     if (z < -260) return DISTRICTS.norte;
     return DISTRICTS.costa;
   }
@@ -980,50 +982,8 @@ window.BS = window.BS || {};
     shoulder.receiveShadow = true;
     scene.add(shoulder);
 
-    // umbrellas, towels, a lifeguard tower
-    var umbCols = [0xe35d4f, 0x2f8f9a, 0xe0b23c, 0xf0efe6];
-    var poleMat = new THREE.MeshStandardMaterial({ color: 0xd8d2c4 });
-    function umbrella(x, z, ci) {
-      var pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2.6, 5), poleMat);
-      pole.position.set(x, 1.6, z);
-      scene.add(pole);
-      var canopy = new THREE.Mesh(new THREE.ConeGeometry(2.1, 0.7, 10),
-        new THREE.MeshStandardMaterial({ color: umbCols[ci % 4], roughness: 0.85, side: THREE.DoubleSide }));
-      canopy.position.set(x, 2.9, z);
-      canopy.castShadow = true;
-      scene.add(canopy);
-      var towel = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 3.4),
-        new THREE.MeshStandardMaterial({ color: umbCols[(ci + 2) % 4], roughness: 1 }));
-      towel.rotation.x = -Math.PI / 2;
-      towel.rotation.z = rng.angle();
-      towel.position.set(x + rng.float(-2, 2), 0.06, z + 2.6);
-      scene.add(towel);
-    }
-    for (var i = 0; i < 16; i++) {
-      umbrella(-280 + i * 52 + rng.float(-10, 10), 545 + rng.float(-16, 20), i);
-    }
-    // a cluster near the waterline so the near beach is not bare
-    for (var u = 0; u < 6; u++) {
-      umbrella(-40 + u * 26 + rng.float(-5, 5), 584 + rng.float(-6, 6), u + 2);
-    }
-    var tower = new THREE.Group();
-    var legMat = new THREE.MeshStandardMaterial({ color: 0xe8e2d2 });
-    for (var l = 0; l < 4; l++) {
-      var leg = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 3.2, 5), legMat);
-      leg.position.set((l % 2 ? 1 : -1) * 1.3, 1.6, (l < 2 ? 1 : -1) * 1.3);
-      tower.add(leg);
-    }
-    var cabin = new THREE.Mesh(new THREE.BoxGeometry(3.4, 1.9, 3.4),
-      new THREE.MeshStandardMaterial({ color: 0xf2d9a8, roughness: 0.85 }));
-    cabin.position.y = 4.1;
-    tower.add(cabin);
-    var roof = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.22, 4.2),
-      new THREE.MeshStandardMaterial({ color: 0xc8503f }));
-    roof.position.y = 5.2;
-    tower.add(roof);
-    tower.position.set(-140, 0.4, 566);
-    scene.add(tower);
-    city.lifeguard = tower;
+    // umbrellas, beach kit and the lifeguard towers now live in landmarks.js;
+    // this keeps the bare sand and the shoulder between road and water.
   }
 
   // ----------------------------------------------------------------- marina
@@ -1151,6 +1111,9 @@ window.BS = window.BS || {};
         var dist = districtAt(cx, cz);
         if (inBay(cx, cz)) continue;
         if (dist.id === 'beach') continue;
+        // the sea-front row belongs to the hotel wall, the north hill to the barrio
+        if (cz === 420) continue;
+        if (cz <= -380 && cx >= -260 && cx <= 40) continue;
         if (dist.id === 'industrial' && cx > 360 && cz < -360) { buildWarehouseLot(city, scene, cx, cz); continue; }
         // two plaza blocks stay open
         if ((cx === -60 && cz === -300) || (cx === 180 && cz === 180)) continue;
@@ -1371,6 +1334,7 @@ window.BS = window.BS || {};
     buildMarina(city, scene);
     buildBeach(city, scene);
     buildBlocks(city, scene);
+    if (BS.Landmarks) BS.Landmarks.build(city, scene);
     if (city.roofParts.length) {
       var roofs = new THREE.Mesh(merge(city.roofParts), new THREE.MeshStandardMaterial({
         vertexColors: true, roughness: 0.92, metalness: 0.08

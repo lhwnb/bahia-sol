@@ -341,6 +341,76 @@ window.BS = window.BS || {};
     });
   }
 
+  // BEACH HOTEL: one storey of a resort slab — two bays, deep balcony, glass
+  // doors behind a solid parapet. Tile 5.4 m x 3.1 m.
+  function hotelPair(tintHex) {
+    return cached('hotel:' + tintHex, function () {
+      var rng = seeded('hotel:' + tintHex);
+      var W = 256, H = 160;
+      var base = makeCanvas(W, H), b = base.getContext('2d');
+      var lit = makeCanvas(W, H), l = lit.getContext('2d');
+      b.fillStyle = hex(tintHex); b.fillRect(0, 0, W, H);
+      l.fillStyle = '#000'; l.fillRect(0, 0, W, H);
+      var wall = new THREE.Color(tintHex);
+      var shade = wall.clone().multiplyScalar(0.82);
+      var deep = wall.clone().multiplyScalar(0.62);
+
+      for (var bay = 0; bay < 2; bay++) {
+        var x = bay * 128;
+        // slab shadow across the top of the storey
+        b.fillStyle = 'rgba(40,36,32,0.34)';
+        b.fillRect(x, 0, 128, 9);
+        // recessed opening
+        b.fillStyle = '#' + deep.getHexString();
+        b.fillRect(x + 9, 16, 110, 118);
+        b.fillStyle = '#171d22';
+        b.fillRect(x + 11, 18, 106, 114);
+        // glass doors, cool reflection at the top, room dark below
+        var g = b.createLinearGradient(x + 11, 18, x + 60, 130);
+        g.addColorStop(0, '#a8c6d4');
+        g.addColorStop(0.42, '#54707f');
+        g.addColorStop(1, '#232d33');
+        b.fillStyle = g;
+        b.fillRect(x + 14, 20, 100, 110);
+        // mullion between the sliding panels
+        b.fillStyle = 'rgba(228,224,212,0.75)';
+        b.fillRect(x + 62, 20, 3, 110);
+        b.fillRect(x + 14, 20, 100, 2.5);
+        // a curtain or a blind pulled half way in some bays
+        if (rng.chance(0.45)) {
+          b.fillStyle = 'rgba(238,232,216,' + rng.float(0.45, 0.85).toFixed(2) + ')';
+          var cw = rng.float(26, 46);
+          b.fillRect(x + 14 + (rng.chance(0.5) ? 0 : 100 - cw), 20, cw, rng.float(50, 96));
+        }
+        // balcony parapet in front, tint colour, with a bright coping
+        b.fillStyle = '#' + shade.getHexString();
+        b.fillRect(x + 9, 96, 110, 38);
+        b.fillStyle = 'rgba(255,255,255,0.55)';
+        b.fillRect(x + 9, 94, 110, 4);
+        for (var p = 0; p < 9; p++) {
+          b.fillStyle = 'rgba(30,32,34,0.18)';
+          b.fillRect(x + 14 + p * 12, 100, 2, 32);
+        }
+        // lit room at night
+        if (rng.chance(0.5)) {
+          l.fillStyle = rng.chance(0.7) ? 'rgba(255,206,150,0.85)' : 'rgba(176,216,255,0.7)';
+          l.fillRect(x + 14, 20, 100, 70);
+          l.fillStyle = 'rgba(255,196,130,0.55)';
+          l.fillRect(x + 9, 96, 110, 38);
+        }
+        // grime and sun bleaching
+        b.globalAlpha = 0.1;
+        b.fillStyle = '#5a4c3c';
+        b.fillRect(x + 9, 132, 110, 5);
+        b.globalAlpha = 1;
+      }
+      return { map: toTexture(base), emissive: toTexture(lit) };
+    });
+  }
+
+  function facadeHotel(tintHex) { return hotelPair(tintHex).map; }
+  function facadeHotelLit(tintHex) { return hotelPair(tintHex).emissive; }
+
   // ground floor shops / awnings, 32 m x 6 m tile
   function shopStrip() {
     return cached('shops', function () {
@@ -707,6 +777,8 @@ window.BS = window.BS || {};
     facadeGlass: facadeGlass,
     facadeStucco: facadeStucco,
     facadeWarehouse: facadeWarehouse,
+    facadeHotel: facadeHotel,
+    facadeHotelLit: facadeHotelLit,
     shopStrip: shopStrip,
     neon: neon,
     glow: glow,
